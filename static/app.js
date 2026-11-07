@@ -1,3 +1,15 @@
+(() => {
+// Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
+const versaoEsperada = '9.5.1-login-sync';
+const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
+const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm'];
+const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
+if (versaoPagina !== versaoEsperada || ausentes.length) {
+  const aviso = document.getElementById('authMsg');
+  if (aviso) aviso.textContent = 'A interface foi carregada com arquivos de versões diferentes. Publique static/index.html e static/app.js juntos, depois abra o endereço em janela anônima.';
+  console.error('VERSAO_INCOMPATIVEL', {versaoPagina, versaoEsperada, ausentes});
+  return;
+}
 const $=id=>document.getElementById(id), state={vacancies:[],candidates:[],selectedVacancy:null,editing:[],selectedCandidate:null,report:null,sourceParts:null};
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const fmt=s=>escapeHTML(s).replace(/\n/g,'<br>');
@@ -40,6 +52,15 @@ $('saveQuestions').onclick=async()=>{try{state.editing.forEach((q,i)=>{const fie
 $('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. No celular, publique em HTTPS antes de testar áudio.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
 function drawCandidateList(){const el=$('candidateCards');el.innerHTML=state.candidates.length?'':'<p class="hint">Ainda não há candidatos.</p>';for(const c of state.candidates){const box=document.createElement('article');box.className='card';box.innerHTML=`<h3>${escapeHTML(c.name)}</h3><p>${escapeHTML(c.vacancy)}</p><p><span class="category">${escapeHTML(c.status)}</span></p><button type="button" class="btn small outline" data-open-candidate="${escapeHTML(c.id)}">Analisar entrevista</button>`;el.append(box)}el.querySelectorAll('[data-open-candidate]').forEach(x=>x.onclick=async()=>{showTab('reports');$('reportCandidate').value=x.dataset.openCandidate;await selectCandidate()})}
 $('reportCandidate').onchange=selectCandidate;
+$('materialsForm').onsubmit=async e=>{e.preventDefault();if(!state.selectedCandidate)return;
+ try{const fd=new FormData();let any=false;for(const name of ['cv','disc','disc_comparativo','linkedin_pdf']){
+  const file=e.currentTarget.querySelector(`[name="${name}"]`)?.files?.[0];if(file){fd.append(name,file);any=true;}}
+  if(!any)throw new Error('Selecione pelo menos um documento.');
+  const result=await call(`/api/admin/candidates/${state.selectedCandidate}/materials`,{method:'POST',body:fd});
+  info('materialsMsg',result.message+' Tamanho de texto extraído: currículo '+result.extraido.curriculo+', DISC '+result.extraido.disc+', LinkedIn '+result.extraido.linkedin+' caracteres.');
+  e.currentTarget.reset();await selectCandidate();
+ }catch(err){info('materialsMsg',err.message,true)}
+};
 let transcriptionWatch=null;
 function transcriptionSummary(job){
  if(!job)return 'Não há áudios pendentes de transcrição.';
@@ -165,7 +186,7 @@ $('draftClientReport').onclick=async()=>{if(!state.selectedCandidate)return;
  const d=await call(`/api/admin/candidates/${state.selectedCandidate}/client-draft`,{method:'POST'});
  $('clientTech').value=(d.tecnicas||[]).join('\n\n');
  $('clientBehavior').value=(d.comportamentais||[]).join('\n\n');
- info('analysisMsg','Rascunho preenchido. Revise, escreva a recomendação e salve antes de exportar.');
+ info('analysisMsg',`Minuta preenchida (${d.modo||'redação documental'}). Não é avaliação automática de domínio. Revise as evidências, escreva a recomendação e salve. ${d.aviso||''}`);
  }catch(e){info('analysisMsg',e.message,true)}
 };
 
@@ -201,3 +222,5 @@ $('resetPasswordForm').onsubmit=async e=>{e.preventDefault();if(!window.resetUse
   await call(`/api/admin/users/${window.resetUserId}/reset-password`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_password:$('resetPasswordValue').value})});
   $('resetPanel').classList.add('hidden');window.resetUserId=null;info('usersMsg','Senha provisória redefinida. Compartilhe-a com o usuário por canal seguro.');await refreshStaffUsers();
 }catch(e){info('usersMsg',e.message,true)}};
+
+})();

@@ -25,6 +25,7 @@ from engine import build_questions
 from technical_engine import prepare_report, update_review, metrics, RUBRIC
 from evaluator_v9 import evaluate_v9
 from draft_v9 import draft_sections
+from evidence_draft import draft_from_sources
 from question_upgrade_v9 import improve_questions
 from client_report import render_client_pdf
 
@@ -272,7 +273,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.5-users-questions','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.6-evidence-draft','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -524,6 +525,37 @@ async def create_candidate(request:Request,vacancy_id:str=Form(...),name:str=For
     base=os.environ.get('ENTREVISTADOR_PUBLIC_URL','').strip().rstrip('/') or str(request.base_url).rstrip('/')
     return {'id':cid,'name':name,'invite':base+'/entrevista/'+token,'source_status':{'curriculo':bool(cv_text),'disc':bool(disc_text),'linkedin':bool(linkedin_text)}}
 
+@APP.post('/api/admin/candidates/{cid}/materials')
+async def update_candidate_materials(request:Request,cid:str,
+    cv:Optional[UploadFile]=File(None),disc:Optional[UploadFile]=File(None),
+    linkedin_pdf:Optional[UploadFile]=File(None),disc_comparativo:Optional[UploadFile]=File(None)):
+    """Completa as fontes de um cadastro existente sem trocar o token da entrevista.
+    Não substitui avaliações humanas já ratificadas ou retificadas.
+    """
+    must_admin(request)
+    with conn() as db:
+        old=db.execute('SELECT * FROM candidates WHERE id=?',(cid,)).fetchone()
+        if not old:raise HTTPException(404,'Candidato não encontrado.')
+        prev=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+        if prev and json.loads(prev['report_json']).get('reviewed_count',0):
+            raise HTTPException(409,'Há revisão humana registrada. Não substitua fontes sem preservar um novo ciclo de avaliação.')
+    if not any(x and x.filename for x in (cv,disc,linkedin_pdf,disc_comparativo)):
+        raise HTTPException(422,'Selecione ao menos um documento.')
+    folder=f'candidatos/{cid}'
+    cv_path,cv_txt,_=await save_file(cv,folder)
+    disc_path,disc_txt,_=await save_file(disc,folder)
+    link_path,li_txt,_=await save_file(linkedin_pdf,folder)
+    _,comp_txt,_=await save_file(disc_comparativo,folder)
+    disc_combined=((disc_txt if disc_path else old['disc_text'])+(('\n\nCOMPARATIVO DISC FORNECIDO:\n'+comp_txt) if comp_txt else '')).strip()[:120000]
+    with conn() as db:
+        db.execute("UPDATE candidates SET cv_text=?,disc_text=?,linkedin_text=?,cv_file=?,disc_file=?,linkedin_file=? WHERE id=?",
+            (cv_txt[:120000] if cv_path else old['cv_text'],disc_combined,
+             (old['linkedin_text']+'\n'+li_txt).strip()[:100000] if link_path else old['linkedin_text'],
+             cv_path or old['cv_file'],disc_path or old['disc_file'],link_path or old['linkedin_file'],cid))
+        db.execute('DELETE FROM reports WHERE candidate_id=?',(cid,))
+    return {'ok':True,'message':'Fontes atualizadas. Gere novamente a análise antes de preparar o dossiê.',
+            'extraido':{'curriculo':len(cv_txt),'disc':len(disc_combined),'linkedin':len(li_txt)}}
+
 @APP.get('/api/admin/candidates/{cid}')
 def candidate_detail(request:Request,cid:str):
     must_admin(request)
@@ -702,6 +734,15 @@ def _do_analysis(cid:str,model:str,auto_transcribe:bool,job_id:str):
                               os.environ.get('ENTREVISTADOR_OLLAMA_URL','http://127.0.0.1:11434'),progress=progress)
         else:
             report['pendencias'].append('Modelo local não configurado: nenhuma nota técnica preliminar atribuída.')
+        # Redação documental preliminar: não gera nota e não aprova ninguém.
+        # Pode ser revisada mesmo no plano Render gratuito sem Ollama.
+        try:
+            provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+            report['client_sections']={'tecnicas':provisional['tecnicas'],'comportamentais':provisional['comportamentais'],'recomendacao':''}
+            report['draft_mode']=provisional['modo']
+            report['draft_pending']={'tecnicas':provisional['validacoes_tecnicas'],'comportamentais':provisional['validacoes_comportamentais']}
+        except ValueError as err:
+            report['draft_error']=str(err)
         report['generated_at']=now()
         if transcribed:report['transcriptions_processed']=transcribed
         with conn() as db:
@@ -907,13 +948,16 @@ async def generate_client_draft(request:Request,cid:str):
         r=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
     if not c or not r:raise HTTPException(404,'Gere primeiro a análise.')
     report=json.loads(r['report_json'])
-    if report.get('reviewed_count',0)==0:
-        raise HTTPException(409,'Revise ao menos uma competência antes de elaborar a redação.')
     model=os.environ.get('ENTREVISTADOR_OLLAMA_MODEL','').strip()
-    if not model:raise HTTPException(503,'Modelo local não configurado.')
+    if model and report.get('reviewed_count',0)>0:
+        try:
+            return await run_in_threadpool(draft_sections,report,c['disc_text'],model,os.environ.get('ENTREVISTADOR_OLLAMA_URL','http://127.0.0.1:11434'))
+        except Exception as ex:
+            raise HTTPException(503,'Falha no rascunho contextual. Tente o modo documental ou revise a configuração: '+str(ex)[:150])
     try:
-        return await run_in_threadpool(draft_sections,report,c['disc_text'],model,os.environ.get('ENTREVISTADOR_OLLAMA_URL','http://127.0.0.1:11434'))
-    except Exception as ex:raise HTTPException(503,'Não foi possível preparar rascunho: '+str(ex)[:190])
+        return draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+    except ValueError as ex:
+        raise HTTPException(422,str(ex))
 
 @APP.post('/api/admin/candidates/{cid}/client-report')
 async def save_client_report(request:Request,cid:str):
@@ -1033,6 +1077,6 @@ async def public_security(request:Request,call_next):
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['Permissions-Policy']='camera=(), geolocation=()'
     response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-    response.headers['Cache-Control']='no-store' if request.url.path.startswith('/api/') else 'private, max-age=0'
+    response.headers['Cache-Control']='no-store' if (request.url.path.startswith('/api/') or request.url.path=='/' or request.url.path=='/static/app.js') else 'private, max-age=0'
     if PRODUCTION:response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
     return response

@@ -64,7 +64,7 @@ PATTERNS = [
  (r'atendimento ao cliente|atender clientes|relacionamento com clientes|suporte ao cliente', 'Atendimento e relacionamento', 'Conte sobre um atendimento complexo que assumiu. Como identificou a demanda, definiu prioridades e confirmou que o cliente recebeu a solução?', 'Diagnóstico, encaminhamento, retorno e resultado.'),
  (r'lideran[cç]|gestao de equipe|coordenar equipe', 'Coordenação de equipes', 'Descreva uma entrega coordenada por você. Como distribuiu responsabilidades, acompanhou o trabalho e tratou um desvio de desempenho?', 'Delegação, acompanhamento, feedback e entrega.'),
  (r'autonom|iniciativa|proativ', 'Autonomia e iniciativa', 'Conte uma situação concreta em que precisou agir sem receber orientação imediata. Como avaliou alternativas, decidiu e assumiu a responsabilidade pelo resultado?', 'Decisão, limites de autonomia, risco e consequência.'),
- (r'escuta ativa|comunica|relacionamento interpessoal', 'Comunicação e escuta', 'Relate uma situação profissional em que precisou adaptar a comunicação a alguém com uma necessidade ou visão diferente. O que ouviu, como respondeu e qual foi o desfecho?', 'Escuta, clareza, adaptação e resultado observado.'),
+ (r'escuta ativa|comunica|comunicativ|relacionamento interpessoal', 'Comunicação e escuta', 'Relate uma situação profissional em que precisou adaptar a comunicação a alguém com uma necessidade ou visão diferente. O que ouviu, como respondeu e qual foi o desfecho?', 'Escuta, clareza, adaptação e resultado observado.'),
  (r'resili|trabalho sob pressao|pressao por resultados', 'Resiliência e pressão', 'Descreva um momento em que houve um contratempo ou pressão relevante na sua rotina. Como reorganizou as ações e preservou a qualidade da entrega?', 'Situação, regulação, priorização e recuperação.'),
  (r'organiza|gestao do tempo|planejamento|prioriz', 'Organização e prioridades', 'Conte uma situação em que precisou administrar várias entregas simultâneas. Como definiu prioridades, acompanhou prazos e tratou imprevistos?', 'Método, prioridades, monitoramento e cumprimento.'),
  (r'colabora|trabalho em equipe', 'Colaboração', 'Descreva uma entrega que exigiu colaboração entre diferentes profissionais. Como dividiu responsabilidades, tratou divergências e contribuiu para o resultado?', 'Atuação pessoal, articulação e resolução de impasses.'),
@@ -98,7 +98,7 @@ def fragments(jd:str) -> list[dict]:
         # Evita cabeçalho solto, informações sobre pagamento e marketing institucional
         if (len(line)<8 and not (HARD.search(normal) or SOFT.search(normal))) or len(line)>2500:continue
         parts=[line]
-        if len(line)>320:parts=[clean(p) for p in re.split(r'(?<=[.;])\s+(?=[A-Za-zÀ-ÿ])',line) if clean(p)]
+        if len(line)>320 or re.search(r'\.\s+[A-ZÀ-Ú]',line):parts=[clean(p) for p in re.split(r'(?<=[.;])\s+(?=[A-Za-zÀ-ÿ])',line) if clean(p)]
         for part in parts:
             # listas explícitas de competências separadas por vírgulas, mas não dividir frases de atividade
             subparts=[part]
@@ -117,10 +117,14 @@ def fragments(jd:str) -> list[dict]:
                 subparts=separated
             for value in subparts:
                 t=norm(value)
+                # Informação de treinamento/ausência de experiência não é soft skill.
+                if re.search(r'\b(?:nao (?:e|sera) obrigatori[ao]|empresa oferece treinamento|nao exigimos experiencia)\b',t):continue
                 if (len(value)<8 and not (HARD.search(t) or SOFT.search(t))) or IGNORE.match(t):continue
                 differential=context=='diferencial' or bool(DIFF.search(t))
                 if context=='responsabilidade':cat='responsabilidade'
-                elif context=='soft':cat='soft'
+                elif context=='soft':
+                    # Texto extraído de PDF pode fundir responsabilidades numa seção comportamental.
+                    cat='responsabilidade' if re.search(r'medicament|preparac.{0,10}pedidos|imprimir ficha|realizar entrega|conferir produto',t) else 'soft'
                 elif context=='hard':cat='hard'
                 elif context=='diferencial':cat='soft' if SOFT.search(t) and not HARD.search(t) else 'hard'
                 elif context=='requisito':cat='soft' if SOFT.search(t) and not HARD.search(t) else 'hard'
