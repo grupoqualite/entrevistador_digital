@@ -1,0 +1,159 @@
+const $=id=>document.getElementById(id), state={vacancies:[],candidates:[],selectedVacancy:null,editing:[],selectedCandidate:null,report:null,sourceParts:null};
+const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const fmt=s=>escapeHTML(s).replace(/\n/g,'<br>');
+async function call(url,options={}){const res=await fetch(url,options);let data;try{data=await res.json()}catch{data={detail:'Servidor indisponível.'}}if(!res.ok)throw new Error(data.detail||`Erro HTTP ${res.status}`);return data;}
+function info(id,text,bad=false){const el=$(id);el.classList.remove('hidden');el.style.background=bad?'#fff2f0':'';el.textContent=text;}
+function option(id,label){const el=$(id),o=document.createElement('option');o.value=id;o.textContent=label;el.append(o)}
+function showTab(tab){document.querySelectorAll('.tabpage').forEach(x=>x.classList.toggle('hidden',x.id!==tab));document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('selected',x.dataset.tab===tab))}
+document.querySelectorAll('[data-tab]').forEach(x=>x.onclick=()=>showTab(x.dataset.tab));
+$('loginForm').onsubmit=async e=>{e.preventDefault();try{await call('/api/login',{method:'POST',body:new URLSearchParams({password:$('pass').value})});$('authMsg').textContent='';$('signin').classList.add('hidden');$('workspace').classList.remove('hidden');$('logout').classList.remove('hidden');await refreshAll()}catch(err){$('authMsg').textContent=err.message}};
+$('logout').onclick=async()=>{await call('/api/logout',{method:'POST'});location.reload()};
+async function init(){try{await call('/api/admin/me');$('signin').classList.add('hidden');$('workspace').classList.remove('hidden');$('logout').classList.remove('hidden');await refreshAll()}catch{}}init();
+async function refreshAll(){await Promise.all([refreshVacancies(),refreshCandidates()])}
+async function refreshVacancies(){state.vacancies=await call('/api/admin/vacancies');let old=state.selectedVacancy||$('vacancySelect').value;for(const id of ['vacancySelect','candidateVacancy']){$(id).innerHTML='';for(const v of state.vacancies)option(id,v.id,v.title)}if(state.vacancies.length){$('vacancySelect').value=state.vacancies.some(v=>v.id===old)?old:state.vacancies[0].id;state.selectedVacancy=$('vacancySelect').value;await loadQuestions();}else{state.editing=[];drawQuestions()}}
+async function refreshCandidates(){state.candidates=await call('/api/admin/candidates');const opts=$('reportCandidate');const old=opts.value||state.selectedCandidate;opts.innerHTML='';for(const c of state.candidates)option('reportCandidate',c.id,`${c.name} · ${c.vacancy}`);if(state.candidates.length){opts.value=state.candidates.some(c=>c.id===old)?old:state.candidates[0].id;state.selectedCandidate=opts.value;await selectCandidate();}else{$('reportCandidateInfo').textContent='Sem candidatos cadastrados.';state.selectedCandidate=null;$('answersArea').innerHTML='';$('reportContent').innerHTML='<p class="hint">Cadastre um candidato primeiro.</p>'}drawCandidateList()}
+$('jobFile').onchange=async()=>{const f=$('jobFile').files[0];if(!f)return;info('jobMsg','Extraindo o texto do arquivo...');try{const data=new FormData();data.append('file',f);const ex=await call('/api/admin/extract',{method:'POST',body:data});state.sourceParts=ex.parts||[{ref:'Documento completo',text:ex.text}];$('sheets').classList.remove('hidden');$('sheetSelect').innerHTML='';option('sheetSelect','all',`Documento completo (${ex.chars} caracteres)`);for(let i=0;i<state.sourceParts.length;i++)option('sheetSelect',String(i),state.sourceParts[i].ref);$('jobDescription').value='';info('jobMsg',`Texto extraído de ${f.name}. Selecione a aba ou página e clique em Aplicar texto selecionado.`)}catch(err){state.sourceParts=null;info('jobMsg',err.message,true)}};
+$('applySheet').onclick=()=>{if(!state.sourceParts)return;const v=$('sheetSelect').value;$('jobDescription').value=v==='all'?state.sourceParts.map(x=>x.text).join('\n'):state.sourceParts[Number(v)]?.text||'';info('jobMsg','Texto aplicado. Confira a descrição e clique em Gerar questionário.')};
+$('vacancyForm').onsubmit=async e=>{e.preventDefault();if($('jobFile').files.length && !$('jobDescription').value.trim())return info('jobMsg','Aplique o texto importado antes de gerar as perguntas.',true);try{const data=new URLSearchParams({title:$('jobTitle').value,description:$('jobDescription').value});const r=await call('/api/admin/vacancies',{method:'POST',body:data});state.selectedVacancy=r.id;await refreshVacancies();info('jobMsg',`Vaga criada com ${r.generated} perguntas. ${r.warnings.join(' ')||'Revise o questionário na área ao lado.'}`)}catch(err){info('jobMsg',err.message,true)}};
+$('vacancySelect').onchange=async()=>{state.selectedVacancy=$('vacancySelect').value;await loadQuestions()};
+async function loadQuestions(){if(!state.selectedVacancy)return;const v=await call(`/api/admin/vacancies/${state.selectedVacancy}`);state.editing=v.questions;drawQuestions();$('qMsg').classList.add('hidden')}
+function drawQuestions(){const el=$('questions');el.innerHTML='';$('qCounter').textContent=`${state.editing.length} perguntas`;state.editing.forEach((q,index)=>{const box=document.createElement('article');box.className='questioncard';box.innerHTML=`<div class="meta"><span class="category">${escapeHTML(q.category_label||q.category)}</span><button class="btn small outline" data-remove="${index}" type="button">Remover</button></div><textarea rows="3" data-edit="${index}" aria-label="Pergunta ${index+1}">${escapeHTML(q.question)}</textarea><div class="origin"><strong>Trecho da vaga:</strong> ${escapeHTML(q.origin||'Inserida manualmente')}<br><strong>Critério:</strong> ${escapeHTML(q.criterion||'')}</div><div class="smallrow"><span class="hint">Peso (1 a 5):</span><select data-weight="${index}">${[1,2,3,4,5].map(w=>`<option ${Number(q.weight)===w?'selected':''} value="${w}">${w}</option>`).join('')}</select><label class="hint" style="margin:0"><input data-diff="${index}" type="checkbox" style="width:auto;display:inline;margin:0" ${q.differential?'checked':''}> Diferencial</label></div>`;el.append(box)});el.querySelectorAll('[data-edit]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.edit)].question=x.value);el.querySelectorAll('[data-weight]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.weight)].weight=Number(x.value));el.querySelectorAll('[data-diff]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.diff)].differential=x.checked);el.querySelectorAll('[data-remove]').forEach(x=>x.onclick=()=>{state.editing.splice(Number(x.dataset.remove),1);drawQuestions()})}
+$('addQuestion').onclick=()=>{state.editing.push({question:'',category:'hard',category_label:'Hard skills',criterion:'Novo critério, inserir origem e competência.',origin:'Pergunta inserida manualmente pelo recrutador',weight:2,differential:false});drawQuestions();$('questions').scrollTop=$('questions').scrollHeight};
+$('saveQuestions').onclick=async()=>{try{state.editing.forEach((q,i)=>{const field=document.querySelector(`[data-edit="${i}"]`);if(field)q.question=field.value});const res=await call(`/api/admin/vacancies/${state.selectedVacancy}/questions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({questions:state.editing})});state.editing=res.questions;drawQuestions();info('qMsg','Questionário salvo e pronto para ser usado com os candidatos.')}catch(err){info('qMsg',err.message,true)}};
+$('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. No celular, publique em HTTPS antes de testar áudio.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
+function drawCandidateList(){const el=$('candidateCards');el.innerHTML=state.candidates.length?'':'<p class="hint">Ainda não há candidatos.</p>';for(const c of state.candidates){const box=document.createElement('article');box.className='card';box.innerHTML=`<h3>${escapeHTML(c.name)}</h3><p>${escapeHTML(c.vacancy)}</p><p><span class="category">${escapeHTML(c.status)}</span></p><button type="button" class="btn small outline" data-open-candidate="${escapeHTML(c.id)}">Analisar entrevista</button>`;el.append(box)}el.querySelectorAll('[data-open-candidate]').forEach(x=>x.onclick=async()=>{showTab('reports');$('reportCandidate').value=x.dataset.openCandidate;await selectCandidate()})}
+$('reportCandidate').onchange=selectCandidate;
+let transcriptionWatch=null;
+function transcriptionSummary(job){
+ if(!job)return 'Não há áudios pendentes de transcrição.';
+ const labels={queued:'Na fila',running:'Transcrevendo',finished:'Transcrição concluída',failed:'Falha na transcrição',interrompido:'Interrompida'};
+ return `${labels[job.status]||job.status} · ${job.progress}/${job.total} áudio(s)`+(job.error?` · ${job.error}`:'');
+}
+async function refreshTranscriptionStatus(cid,refreshAnswers=true){
+ const data=await call(`/api/admin/candidates/${cid}/transcription-status`);
+ if(state.selectedCandidate!==cid)return;
+ $('transcriptionState').textContent=transcriptionSummary(data.job)+(data.pending_audio?` · ${data.pending_audio} áudio(s) aguardando.`:'');
+ if(data.job?.status==='finished' && refreshAnswers){
+   clearInterval(transcriptionWatch);transcriptionWatch=null;
+   await selectCandidate();
+ }
+ if(data.job?.status==='failed'||data.job?.status==='interrompido'){
+   clearInterval(transcriptionWatch);transcriptionWatch=null;
+ }
+ if(data.job && ['queued','running'].includes(data.job.status) && !transcriptionWatch){
+   transcriptionWatch=setInterval(()=>refreshTranscriptionStatus(cid).catch(()=>{}),6000);
+ }
+}
+$('retryTranscripts').onclick=async()=>{
+ const cid=state.selectedCandidate;if(!cid)return;
+ try{const r=await call(`/api/admin/candidates/${cid}/transcribe-all`,{method:'POST'});
+   info('analysisMsg',r.job_id?'Transcrição adicionada à fila. Confira o progresso.':'Não há novos áudios pendentes ou já existe um processamento em andamento.');
+   await refreshTranscriptionStatus(cid,false);
+ }catch(e){info('analysisMsg',e.message,true)}
+};
+async function selectCandidate(){const cid=$('reportCandidate').value;if(!cid)return;state.selectedCandidate=cid;const c=await call(`/api/admin/candidates/${cid}`);state.detail=c;state.report=c.report;clearInterval(transcriptionWatch);transcriptionWatch=null;refreshTranscriptionStatus(cid,false).catch(()=>{});const section=c.report?.client_sections||{};
+ $('clientTech').value=(section.tecnicas||[]).join('\n\n');
+ $('clientBehavior').value=(section.comportamentais||[]).join('\n\n');
+ $('clientRecommendation').value=section.recomendacao||c.report?.reviewer_comment||'';const evidence=[c.cv_text?'Currículo ✓':'Currículo ausente',c.disc_text?'DISC ✓':'DISC ausente',c.linkedin_text?'LinkedIn exportado ✓':'LinkedIn não extraído'];$('reportCandidateInfo').textContent=`${c.vacancy} · ${c.status} · ${evidence.join(' · ')}`;const area=$('answersArea');area.innerHTML='';for(const q of c.questions){const a=c.answers[q.id],box=document.createElement('section');box.className='answerrow';box.innerHTML=`<strong>${escapeHTML(q.id)} · ${escapeHTML(q.category_label)}</strong><p>${escapeHTML(q.question)}</p>${a?.mode==='audio'?`<audio controls src="/api/admin/candidates/${cid}/audio/${encodeURIComponent(q.id)}"></audio><label>Transcrição do áudio<textarea rows="3" data-transcript="${escapeHTML(q.id)}" placeholder="Registre a transcrição fiel para análise">${escapeHTML(a.transcript||'')}</textarea><button type="button" class="btn small outline" data-save-transcript="${escapeHTML(q.id)}">Salvar transcrição</button> <button type="button" class="btn small outline" data-auto-transcript="${escapeHTML(q.id)}">Transcrever com Whisper local</button>`:`<p class="hint">${escapeHTML(a?.text||'Sem resposta')}</p>`}`;area.append(box)}area.querySelectorAll('[data-auto-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.autoTranscript;try{info('analysisMsg','Transcrevendo com Whisper no computador...');const v=await call(`/api/admin/candidates/${cid}/transcribe/${qid}`,{method:'POST'});info('analysisMsg','Áudio enviado para a fila de transcrição. Aguarde o resultado.');await refreshTranscriptionStatus(cid,false)}catch(err){info('analysisMsg',err.message,true)}});area.querySelectorAll('[data-save-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.saveTranscript,text=area.querySelector(`[data-transcript="${qid}"]`).value;try{await call(`/api/admin/candidates/${cid}/transcripts/${qid}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});info('analysisMsg',`Transcrição ${qid} salva. Gere novamente o dossiê.`)}catch(e){info('analysisMsg',e.message,true)}});drawReport()}
+$('analyze').onclick=async()=>{if(!state.selectedCandidate)return;try{
+ info('analysisMsg','Análise iniciada. Os áudios e critérios serão processados sem interromper a entrevista.');
+ $('analyze').disabled=true;
+ const task=await call(`/api/admin/candidates/${state.selectedCandidate}/analyze`,{method:'POST',body:new URLSearchParams({ollama_model:$('ollamaModel').value.trim(),auto_transcribe:'true'})});
+ for(let tries=0;tries<1800;tries++){
+   await new Promise(r=>setTimeout(r,1500));
+   const j=await call(`/api/admin/jobs/${task.job_id}`);
+   info('analysisMsg',`Análise ${j.status} · ${j.progress}/${j.total||'?'} critérios`);
+   if(j.status==='failed')throw new Error(j.error||'A análise não pôde ser concluída.');
+   if(j.status==='finished'){await selectCandidate();info('analysisMsg','Análise preliminar concluída. Confira cada evidência e ratifique ou retifique.');break;}
+ }
+}catch(err){info('analysisMsg',err.message,true)}finally{$('analyze').disabled=false}};
+function drawReport(){
+ const r=state.report,el=$('reportContent');
+ if(!r){el.innerHTML='<p class="hint">Selecione um candidato e execute a análise técnica.</p>';return}
+ const pct=n=>n==null?'N/D':n+'%';
+ let html=`<div class="kpi"><div><strong>${pct(r.technical_percent)}</strong><small>ADERÊNCIA TÉCNICA EVIDENCIADA</small></div><div><strong>${pct(r.technical_coverage)}</strong><small>COBERTURA TÉCNICA</small></div></div>
+ <div class="kpi"><div><strong>${pct(r.behavioral_percent)}</strong><small>Soft skills (sem DISC na nota)</small></div><div><strong>${pct(r.adherence_percent)}</strong><small>Aderência global evidenciada</small></div></div>
+ <div class="origin"><strong>${escapeHTML(r.review_status||'Pendente de revisão')}</strong> · ${r.reviewed_count||0}/${r.reviewable_count||0} critérios analisados pelo recrutador</div>
+ <p class="hint"><strong>Método:</strong> ${escapeHTML(r.analysis_mode)}</p>
+ <p class="hint">A escala é 0–4. Sem evidência, o critério permanece sem nota e continua no denominador. Aderência não é aprovação. As notas da IA dependem de revisão humana.</p>`;
+ for(const c of r.criteria){
+   const proposal=c.auto_score;const value=c.score;
+   const quoteList=(c.verified_excerpts||[]).map(x=>`<div class="origin"><strong>${escapeHTML(x.source)}:</strong> “${escapeHTML(x.excerpt)}”</div>`).join('');
+   const warnings=(c.pending_validation||[]).map(x=>`<p class="hint">A validar: ${escapeHTML(x)}</p>`).join('');
+   html+=`<article class="criterion"><div class="category">${escapeHTML(c.category)}${c.differential?' · Diferencial':''}</div>
+       <strong>${escapeHTML(c.id)}. ${escapeHTML(c.criterion)}</strong>
+       <p class="hint">Origem na vaga: ${escapeHTML(c.source_jd)}</p>
+       <p><strong>Nota sugerida:</strong> ${proposal==null?'Sem evidência para nota':proposal+'/4'} · <strong>Nota vigente:</strong> ${value==null?'Sem nota':value+'/4'} · Peso ${c.weight}</p>
+       <p><strong>Justificativa:</strong> ${escapeHTML(c.auto_reason||c.status)}</p>
+       ${quoteList||'<p class="hint">A IA não identificou citação literal válida para este critério.</p>'}
+       ${warnings}
+       <div class="reviewgrid">
+         <label>Decisão do recrutador<select data-decision="${escapeHTML(c.id)}"><option value="pendente">Pendente, sem alteração</option><option value="ratificar" ${c.review_decision==='ratificar'?'selected':''} ${proposal==null?'disabled':''}>Ratificar a nota sugerida</option><option value="retificar" ${c.review_decision==='retificar'?'selected':''}>Retificar ou acrescentar nota</option></select></label>
+         <label>Nota humana<select data-human-score="${escapeHTML(c.id)}"><option value="">Sem evidência</option>${[0,1,2,3,4].map(v=>`<option value="${v}" ${(c.review_decision==='retificar'?c.human_score:c.auto_score)===v?'selected':''}>${v}/4</option>`).join('')}</select></label>
+       </div>
+       <label>Justificativa da revisão (obrigatória ao retificar)<textarea data-reason="${escapeHTML(c.id)}" rows="2" placeholder="Explique qual evidência levou à alteração">${escapeHTML(c.review_justification&&c.review_decision==='retificar'?c.review_justification:'')}</textarea></label>
+       <small class="hint">Status: ${escapeHTML(c.status||'Pendente')}</small>
+   </article>`;
+ }
+ html+=`<h3>DISC</h3><p>${escapeHTML(r.disc?.status||'Não fornecido')}</p><p class="hint">A avaliação DISC não modifica a aderência técnica nem substitui evidências comportamentais.</p>
+ <h3>Condições eliminatórias</h3><p class="hint">Devem ser verificadas separadamente da nota técnica.</p>
+ ${(r.eliminatorios_sugeridos||[]).map(x=>`<p>${escapeHTML(x.requisito||'')} · ${escapeHTML(x.estado||'não confirmado')} · ${escapeHTML(x.fundamento||'')}</p>`).join('')}
+ <h3>Pendências</h3>${(r.pendencias||[]).map(x=>`<p class="hint">• ${escapeHTML(x)}</p>`).join('')}
+ <label>Parecer do recrutador<textarea id="reviewerComment" rows="4" placeholder="Conclusões, riscos e validações que precisam ser confirmadas">${escapeHTML(r.reviewer_comment||'')}</textarea></label>
+ <button type="button" id="saveReview" class="btn primary">Salvar ratificações e retificações</button>`;
+ el.innerHTML=html;
+ $('saveReview').onclick=async()=>{
+   const decisions={};
+   el.querySelectorAll('[data-decision]').forEach(node=>{
+     const action=node.value;
+     if(action==='pendente')return;
+     const id=node.dataset.decision;
+     const input=el.querySelector(`[data-human-score="${id}"]`),note=el.querySelector(`[data-reason="${id}"]`);
+     decisions[id]={action,score:input.value===''?null:Number(input.value),justification:note.value};
+   });
+   try{
+      state.report=await call(`/api/admin/candidates/${state.selectedCandidate}/review`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({decisions,comment:$('reviewerComment').value})
+      });
+      drawReport();info('analysisMsg','Revisão registrada e histórico preservado. É possível exportar o dossiê.');
+   }catch(err){info('analysisMsg',err.message,true)}
+ };
+}
+$('downloadPdf').onclick=async()=>{if(!state.selectedCandidate)return;const url=`/api/admin/candidates/${state.selectedCandidate}/report.pdf`;
+ try{const res=await fetch(url);if(!res.ok){let x;try{x=await res.json()}catch{}throw new Error(x?.detail||'Parecer indisponível')};const blob=await res.blob();const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download='parecer_cliente.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(u),3000)}catch(e){info('analysisMsg',e.message,true)}};
+$('downloadInternalPdf').onclick=()=>{if(state.selectedCandidate)location.href=`/api/admin/candidates/${state.selectedCandidate}/report-interno.pdf`};
+$('saveClientReport').onclick=async()=>{
+ if(!state.selectedCandidate){info('analysisMsg','Selecione um candidato antes de salvar.',true);return}
+ try{const data={tecnicas:$('clientTech').value,comportamentais:$('clientBehavior').value,recomendacao:$('clientRecommendation').value};
+  await call(`/api/admin/candidates/${state.selectedCandidate}/client-report`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  info('analysisMsg','Parecer para o cliente salvo. Revise o PDF antes de enviar.');
+ }catch(err){info('analysisMsg',err.message,true)}
+};
+$('downloadJson').onclick=()=>{if(state.selectedCandidate)location.href=`/api/admin/candidates/${state.selectedCandidate}/report.json`};
+
+$('saveLogo').onclick=async()=>{
+ const file=$('logoUpload').files[0];if(!file)return $('logoMessage').textContent='Selecione uma imagem PNG ou JPG.';
+ try{const data=new FormData();data.append('file',file);await call('/api/admin/brand/logo',{method:'POST',body:data});$('logoMessage').textContent='Logotipo salvo. Será exibido nos convites e pareceres.'}
+ catch(e){$('logoMessage').textContent=e.message}
+};
+$('removeLogo').onclick=async()=>{
+ try{await call('/api/admin/brand/logo',{method:'DELETE'});$('logoMessage').textContent='Logotipo removido. O cabeçalho voltará a ser neutro.'}
+ catch(e){$('logoMessage').textContent=e.message}
+};
+$('backup').onclick=()=>{location.href='/api/admin/backup.zip'};
+
+$('draftClientReport').onclick=async()=>{if(!state.selectedCandidate)return;
+ try{info('analysisMsg','Preparando rascunho fundamentado das seções. É necessária revisão editorial.');
+ const d=await call(`/api/admin/candidates/${state.selectedCandidate}/client-draft`,{method:'POST'});
+ $('clientTech').value=(d.tecnicas||[]).join('\n\n');
+ $('clientBehavior').value=(d.comportamentais||[]).join('\n\n');
+ info('analysisMsg','Rascunho preenchido. Revise, escreva a recomendação e salve antes de exportar.');
+ }catch(e){info('analysisMsg',e.message,true)}
+};
+
+$('improveQuestions').onclick=async()=>{if(!state.selectedVacancy){info('qMsg','Selecione uma vaga.',true);return}
+ try{info('qMsg','Aprimorando perguntas a partir dos requisitos da vaga.');
+ const data=await call(`/api/admin/vacancies/${state.selectedVacancy}/improve-questions`,{method:'POST'});
+ state.editing=data.questions;drawQuestions();info('qMsg',`${data.aprimoradas} perguntas aprimoradas. Revise o roteiro antes dos convites.`)
+ }catch(e){info('qMsg',e.message,true)}};
