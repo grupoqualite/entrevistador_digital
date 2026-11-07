@@ -1,0 +1,35 @@
+# Publica NOVO serviço independente, com transcrição Whisper obrigatória.
+# Confirme no Render os custos do plano 1c-2g (1 CPU e 2 GB RAM) e do disco SSD.
+# Starter 512 MB não é adequado para esta configuração.
+services:
+  - type: web
+    name: entrevistador-digital-teste
+    runtime: docker
+    plan: 1c-2g
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /api/health
+    numInstances: 1
+    envVars:
+      - key: ENTREVISTADOR_ENV
+        value: production
+      - key: ENTREVISTADOR_DATA
+        value: /app/dados
+      - key: ENTREVISTADOR_WHISPER_MODEL
+        value: /opt/whisper/base
+      - key: ENTREVISTADOR_OLLAMA_MODEL
+        value: ""
+      - key: ENTREVISTADOR_MARCA
+        value: Entrevistador Digital
+      - key: ENTREVISTADOR_ADMIN_PASSWORD
+        sync: false
+      - key: ENTREVISTADOR_CONTROLLER_NAME
+        sync: false
+      - key: ENTREVISTADOR_PRIVACY_CONTACT
+        sync: false
+      - key: ENTREVISTADOR_RETENTION_DAYS
+        value: "30"
+    disk:
+      name: entrevistador-dados
+      mountPath: /app/dados
+      sizeGB: 2

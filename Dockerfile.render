@@ -1,0 +1,23 @@
+# Instância web Render com transcrição nativa de áudio em português.
+# Não oferece inferência Ollama no próprio serviço: avaliação automática exige serviço adicional.
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libgomp1 ffmpeg fonts-dejavu-core gosu && rm -rf /var/lib/apt/lists/*
+COPY requirements-render.txt ./
+RUN pip install --no-cache-dir -r requirements-render.txt
+# Download durante a compilação: a transcrição funciona depois mesmo sem Hugging Face disponível.
+# Modelo Whisper BASE MULTILÍNGUE (não base.en), int8 em CPU.
+RUN mkdir -p /opt/whisper/base && \
+    HF_HUB_OFFLINE=0 python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Systran/faster-whisper-base',local_dir='/opt/whisper/base')" && \
+    test -s /opt/whisper/base/model.bin
+RUN groupadd --gid 10001 entrevistador && useradd --uid 10001 --gid entrevistador --home-dir /app --shell /usr/sbin/nologin entrevistador
+COPY --chown=entrevistador:entrevistador . /app
+RUN mkdir -p /app/dados && chown -R entrevistador:entrevistador /app/dados
+COPY docker_entrypoint_render.sh /usr/local/bin/docker-entrypoint-render.sh
+RUN chmod 755 /usr/local/bin/docker-entrypoint-render.sh
+ENV ENTREVISTADOR_WHISPER_MODEL=/opt/whisper/base
+EXPOSE 10000
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-render.sh"]
+CMD ["python", "render_entrypoint.py"]

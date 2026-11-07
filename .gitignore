@@ -1,0 +1,17 @@
+# Dados e credenciais confidenciais
+.env
+.env.*
+!.env.example
+dados/
+*.sqlite3
+*.sqlite3-*
+*.db
+__pycache__/
+*.pyc
+.pytest_cache/
+backups/
+*.log
+.DS_Store
+.venv/
+venv/
+*_test*.pdf
