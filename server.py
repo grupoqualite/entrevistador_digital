@@ -210,7 +210,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.1-free-pilot','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.2-login-check','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...)):
@@ -812,28 +812,33 @@ if __name__=='__main__':
 async def public_security(request:Request,call_next):
     if PRODUCTION and request.method in ('POST','PUT','PATCH','DELETE'):
         from urllib.parse import urlsplit
-        # Verifica a origem quando enviada. Navegadores e webviews podem omitir
-        # Origin e Referer em solicitações legítimas, inclusive com política
-        # Referrer-Policy: no-referrer, que este servidor utiliza.
-        public=urlsplit(os.environ['ENTREVISTADOR_PUBLIC_URL'].strip())
-        expected_host=public.netloc.lower()
-        request_host=(request.headers.get('host') or '').strip().lower()
+        # O endereço público configurado serve para links; a validação CSRF
+        # deve comparar o Origin ao Host efetivo da requisição. Uma variável
+        # de ambiente desatualizada não deve impedir o login legítimo.
+        real_host=(request.headers.get('host') or '').strip().lower()
+        public_host=urlsplit(os.environ['ENTREVISTADOR_PUBLIC_URL'].strip()).netloc.lower()
         origin=(request.headers.get('origin') or '').strip()
         referer=(request.headers.get('referer') or '').strip()
         fetch_site=(request.headers.get('sec-fetch-site') or '').strip().lower()
-        blocked=False
-        if request_host!=expected_host or fetch_site in ('cross-site','same-site'):
-            blocked=True
+        # Bloqueia Host desconhecido, e mantém o domínio temporário Render
+        # permitido para o piloto; no domínio próprio, exige a variável.
+        allowed_host=bool(real_host and (real_host==public_host or real_host=='entrevistador-digital.onrender.com'))
+        reason=None
+        if not allowed_host:
+            reason='HOST'
+        elif fetch_site in ('cross-site','same-site'):
+            reason='FETCH_SITE'
         elif origin:
             o=urlsplit(origin)
-            blocked=(o.scheme!='https' or o.netloc.lower()!=expected_host)
+            if o.scheme!='https' or o.netloc.lower()!=real_host:reason='ORIGIN'
         elif referer:
             r=urlsplit(referer)
-            blocked=(r.scheme!='https' or r.netloc.lower()!=expected_host)
+            if r.scheme!='https' or r.netloc.lower()!=real_host:reason='REFERER'
         elif fetch_site not in ('','same-origin','none'):
-            blocked=True
-        if blocked:
-            return JSONResponse({'detail':'Origem da solicitação não autorizada.'},status_code=403)
+            reason='FETCH_SITE_UNKNOWN'
+        if reason:
+            print('[SECURITY] POST bloqueado em '+request.url.path+'; motivo='+reason,flush=True)
+            return JSONResponse({'detail':'Solicitação bloqueada por validação de origem. Código '+reason+'.'},status_code=403)
     response=await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'

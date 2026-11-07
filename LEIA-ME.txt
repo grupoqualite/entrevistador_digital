@@ -1,16 +1,14 @@
-CORREÇÃO DO LOGIN, V9 RENDER FREE
+ENTREVISTADOR DIGITAL V9 | CORREÇÃO E DIAGNÓSTICO DE LOGIN
 
-Causa reproduzida: o middleware public_security exigia Origin ou Referer em todos os POSTs. Em navegadores que não os enviam, bloqueava /api/login com HTTP 403, mesmo com senha correta. A aplicação também utiliza Referrer-Policy: no-referrer.
+Correção 9.2: o endereço configurado na variável ENTREVISTADOR_PUBLIC_URL não pode, sozinho, impedir uma requisição originada no próprio endereço HTTPS do aplicativo. A nova validação compara o Origin/Referer ao Host real, e mantém bloqueadas requisições cross-site e hosts não autorizados.
 
-Correção: valida a URL pública, o cabeçalho Host, o Origin/Referer quando disponíveis e Sec-Fetch-Site. Bloqueia origens divergentes, mas não rejeita automaticamente solicitações legítimas sem Origin/Referer.
+1. No GitHub, substitua SOMENTE o server.py da raiz por este arquivo.
+2. Commit na branch main. No Render, Manual Deploy > Deploy latest commit.
+3. Confira a URL https://entrevistador-digital.onrender.com/api/health. Deverá aparecer version: 9.2-login-check.
+4. No Render, Environment, confira (sem colar aqui): ENTREVISTADOR_PUBLIC_URL = https://entrevistador-digital.onrender.com, sem aspas e sem caminho adicional. ENTREVISTADOR_ADMIN_PASSWORD deve conter a senha EXCLUSIVA do app com >=16 caracteres.
+5. Abra o site diretamente em uma aba privada do navegador (não dentro do ChatGPT). Tente uma vez.
+6. Se falhar, no Render > Logs, procure a linha de POST /api/login e informe APENAS o status HTTP (401, 403, 429 ou 500) e a mensagem abaixo do botão. Não compartilhe senha, cookies ou tokens.
 
-1. No GitHub, abra a raiz do repositório entrevistador-digital.
-2. Substitua APENAS server.py pelo arquivo deste pacote, mantendo seu nome e localização.
-3. Faça Commit changes na branch main.
-4. No Render, Manual Deploy -> Deploy latest commit. Não altere a senha novamente.
-5. Teste o login em https://entrevistador-digital.onrender.com/ usando a senha salva na variável ENTREVISTADOR_ADMIN_PASSWORD.
-6. Acesse /api/health para checar que o servidor responde.
+Interpretação: 401 = senha incorreta; 403 = origem; 429 = bloqueio temporário após oito tentativas (o reinício do serviço normalmente limpa esse bloqueio); 500 = erro interno que requer traceback dos logs; 200 com tela ainda bloqueada = cookie ou sessão. O código de segurança registra motivos de 403 no log sem expor credenciais.
 
-Se continuar a falhar, copie apenas a mensagem do erro abaixo do botão de login, sem compartilhar a senha.
-
-MANTER CANDIDATOS REAIS FORA DO PILOTO: Render Free não persiste SQLite, currículos, áudios e relatórios em reinicializações. Esta correção não resolve esse requisito de segurança e persistência.
+ATENÇÃO: a correção não torna o Render gratuito persistente para candidatos reais.
