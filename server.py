@@ -76,9 +76,34 @@ with conn() as db:
     CREATE TABLE IF NOT EXISTS answers(candidate_id TEXT NOT NULL REFERENCES candidates(id),question_id TEXT NOT NULL,mode TEXT NOT NULL,text TEXT DEFAULT '',transcript TEXT DEFAULT '',audio_file TEXT DEFAULT '',updated TEXT NOT NULL,PRIMARY KEY(candidate_id,question_id));
     CREATE TABLE IF NOT EXISTS reports(candidate_id TEXT PRIMARY KEY REFERENCES candidates(id),report_json TEXT NOT NULL,generated TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS admin_sessions(token_hash TEXT PRIMARY KEY,expires_at REAL NOT NULL,created_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS staff_users(
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        role TEXT NOT NULL CHECK(role IN ('administrador','recrutador')),
+        password_salt TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        must_change_password INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_login_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS staff_audit(
+        id TEXT PRIMARY KEY,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        subject_id TEXT,
+        at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS analysis_jobs(id TEXT PRIMARY KEY,candidate_id TEXT NOT NULL,status TEXT NOT NULL,progress INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,error TEXT DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS transcription_jobs(id TEXT PRIMARY KEY,candidate_id TEXT NOT NULL REFERENCES candidates(id),status TEXT NOT NULL,progress INTEGER NOT NULL DEFAULT 0,total INTEGER NOT NULL DEFAULT 0,error TEXT DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
     ''')
+    sess_cols={r['name'] for r in db.execute('PRAGMA table_info(admin_sessions)').fetchall()}
+    if 'user_id' not in sess_cols:
+        db.execute("ALTER TABLE admin_sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT '__owner__'")
+        # Sessões anteriores à migração não têm identidade individual; exigir novo login.
+        db.execute('DELETE FROM admin_sessions')
     existing={r['name'] for r in db.execute('PRAGMA table_info(candidates)').fetchall()}
     if 'invite_expires_at' not in existing:db.execute('ALTER TABLE candidates ADD COLUMN invite_expires_at TEXT')
     if 'revoked_at' not in existing:db.execute('ALTER TABLE candidates ADD COLUMN revoked_at TEXT')
@@ -110,14 +135,51 @@ def now():return datetime.now().isoformat(timespec='seconds')
 def uid():return secrets.token_hex(8)
 def fmt_row(r):return dict(r) if r else None
 
-def authorized(request:Request)->bool:
-    cookie=request.cookies.get('ed_sess','')
-    if len(cookie)<28:return False
+def password_hash(password:str,salt_hex:str)->str:
+    # PBKDF2 com sal único por usuário. O valor da senha jamais é armazenado.
+    return hashlib.pbkdf2_hmac('sha256',password.encode('utf-8'),bytes.fromhex(salt_hex),600_000).hex()
+
+def validate_password(password:str):
+    if len(password)<16 or len(password)>256:
+        raise HTTPException(422,'A senha precisa ter entre 16 e 256 caracteres.')
+    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        raise HTTPException(422,'A senha precisa conter letras e números.')
+
+def current_actor(request:Request):
+    token=request.cookies.get('ed_sess','')
+    if len(token)<28:return None
     with conn() as db:
-        row=db.execute('SELECT expires_at FROM admin_sessions WHERE token_hash=?',(hashlib.sha256(cookie.encode()).hexdigest(),)).fetchone()
-    return bool(row and row['expires_at']>time.time())
+        row=db.execute('SELECT user_id,expires_at FROM admin_sessions WHERE token_hash=?',(hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        if not row or row['expires_at']<=time.time():return None
+        if row['user_id']=='__owner__':
+            return {'id':'__owner__','name':'Administrador principal','email':'admin','role':'administrador','owner':True,'must_change_password':False}
+        u=db.execute('SELECT id,name,email,role,active,must_change_password FROM staff_users WHERE id=?',(row['user_id'],)).fetchone()
+        if not u or not u['active']:return None
+        actor=dict(u);actor['owner']=False;actor['must_change_password']=bool(actor['must_change_password'])
+        return actor
+
+def authorized(request:Request)->bool:
+    return current_actor(request) is not None
+
 def must_admin(request:Request):
-    if not authorized(request):raise HTTPException(status_code=401,detail='Acesso administrativo necessário.')
+    actor=current_actor(request)
+    if not actor:raise HTTPException(status_code=401,detail='Faça login para acessar o painel.')
+    if actor['must_change_password']:
+        raise HTTPException(status_code=403,detail='Altere sua senha provisória antes de acessar o painel.')
+    return actor
+
+def must_manage_users(request:Request):
+    actor=must_admin(request)
+    if actor['role']!='administrador':raise HTTPException(403,'Somente administradores podem gerenciar usuários.')
+    return actor
+
+def public_actor(actor:dict)->dict:
+    return {k:actor[k] for k in ('id','name','email','role','owner','must_change_password')}
+
+def record_audit(db,actor,action,subject_id=None):
+    db.execute('INSERT INTO staff_audit(id,actor,action,subject_id,at) VALUES(?,?,?,?,?)',
+               (secrets.token_hex(12),actor['id'],action,subject_id,now()))
+
 
 def get_candidate(token:str):
     with conn() as db:
@@ -210,23 +272,42 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.2-login-check','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.5-users-questions','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
-async def login(request:Request,response:Response,password:str=Form(...)):
+async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
+    # Compatibilidade: login principal com apenas a antiga chave administrativa.
+    identifier=identifier.strip().lower()
     ip=request.client.host if request.client else 'unknown'
-    period=time.time();track=[x for x in LOGIN_TRACKER.get(ip,[]) if x>period-900]
-    if len(track)>=8:raise HTTPException(429,'Muitas tentativas. Tente novamente mais tarde.')
-    if not secrets.compare_digest(hashlib.sha256(password.encode()).hexdigest(),ADMIN_HASH):
-        LOGIN_TRACKER[ip]=track+[period]
-        raise HTTPException(401,'Credencial incorreta.')
-    LOGIN_TRACKER.pop(ip,None)
+    tracker_key=ip+':'+identifier[:100]
+    period=time.time();track=[x for x in LOGIN_TRACKER.get(tracker_key,[]) if x>period-900]
+    if len(track)>=8:raise HTTPException(429,'Muitas tentativas. Aguarde 15 minutos.')
+    user_id=None
+    if identifier in ('','admin','administrador'):
+        match=secrets.compare_digest(hashlib.sha256(password.encode()).hexdigest(),ADMIN_HASH)
+        if match:user_id='__owner__'
+    else:
+        match=False
+        with conn() as db:
+            user=db.execute('SELECT * FROM staff_users WHERE email=? COLLATE NOCASE',(identifier,)).fetchone()
+        if user and user['active']:
+            supplied=password_hash(password,user['password_salt'])
+            match=secrets.compare_digest(supplied,user['password_hash'])
+            if match:user_id=user['id']
+    if not user_id:
+        LOGIN_TRACKER[tracker_key]=track+[period]
+        raise HTTPException(401,'Usuário ou senha incorretos.')
+    LOGIN_TRACKER.pop(tracker_key,None)
     token=secrets.token_urlsafe(40)
     with conn() as db:
         db.execute('DELETE FROM admin_sessions WHERE expires_at<?',(period,))
-        db.execute('INSERT INTO admin_sessions VALUES(?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),period+8*3600,period))
+        db.execute('INSERT INTO admin_sessions(token_hash,expires_at,created_at,user_id) VALUES(?,?,?,?)',
+                   (hashlib.sha256(token.encode()).hexdigest(),period+8*3600,period,user_id))
+        if user_id!='__owner__':
+            db.execute('UPDATE staff_users SET last_login_at=? WHERE id=?',(now(),user_id))
     response.set_cookie('ed_sess',token,max_age=8*3600,httponly=True,samesite='strict',secure=PRODUCTION or bool(os.environ.get('ENTREVISTADOR_SECURE_COOKIE')=='1'),path='/')
-    return {'ok':True}
+    return {'ok':True,'must_change_password':bool(user_id!='__owner__' and user['must_change_password'])}
+
 @APP.post('/api/logout')
 def logout(request:Request,response:Response):
     token=request.cookies.get('ed_sess','')
@@ -234,9 +315,101 @@ def logout(request:Request,response:Response):
         with conn() as db:db.execute('DELETE FROM admin_sessions WHERE token_hash=?',(hashlib.sha256(token.encode()).hexdigest(),))
     response.delete_cookie('ed_sess',path='/')
     return {'ok':True}
+
 @APP.get('/api/admin/me')
 def me(request:Request):
-    must_admin(request);return {'ok':True}
+    actor=current_actor(request)
+    if not actor:raise HTTPException(401,'Faça login para acessar o painel.')
+    return {'ok':True,**public_actor(actor)}
+
+@APP.post('/api/admin/me/password')
+async def change_own_password(request:Request):
+    actor=current_actor(request)
+    if not actor:raise HTTPException(401,'Faça login primeiro.')
+    if actor['owner']:
+        raise HTTPException(403,'A senha do administrador principal é alterada em Environment no Render.')
+    body=await request.json()
+    old=str(body.get('current_password') or '')
+    new=str(body.get('new_password') or '')
+    validate_password(new)
+    with conn() as db:
+        u=db.execute('SELECT * FROM staff_users WHERE id=?',(actor['id'],)).fetchone()
+        if not u or not u['active']:raise HTTPException(401,'Conta desativada.')
+        if not secrets.compare_digest(password_hash(old,u['password_salt']),u['password_hash']):
+            raise HTTPException(401,'Senha atual incorreta.')
+        if secrets.compare_digest(password_hash(new,u['password_salt']),u['password_hash']):
+            raise HTTPException(422,'A nova senha precisa ser diferente da anterior.')
+        salt=secrets.token_hex(16)
+        db.execute('UPDATE staff_users SET password_salt=?,password_hash=?,must_change_password=0,updated_at=? WHERE id=?',
+                   (salt,password_hash(new,salt),now(),actor['id']))
+        record_audit(db,actor,'change_own_password',actor['id'])
+    return {'ok':True}
+
+@APP.get('/api/admin/users')
+def list_staff_users(request:Request):
+    must_manage_users(request)
+    with conn() as db:
+        return [dict(r) for r in db.execute('''SELECT id,name,email,role,active,must_change_password,created_at,last_login_at
+                     FROM staff_users ORDER BY created_at DESC''').fetchall()]
+
+@APP.post('/api/admin/users',status_code=201)
+async def create_staff_user(request:Request):
+    actor=must_manage_users(request)
+    body=await request.json()
+    name=str(body.get('name') or '').strip()
+    email=str(body.get('email') or '').strip().lower()
+    role=str(body.get('role') or '')
+    password=str(body.get('password') or '')
+    if not (2<=len(name)<=120):raise HTTPException(422,'Informe um nome de 2 a 120 caracteres.')
+    if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email) or len(email)>254:
+        raise HTTPException(422,'Informe um e-mail válido.')
+    if role not in ('administrador','recrutador'):raise HTTPException(422,'Perfil inválido.')
+    validate_password(password)
+    salt=secrets.token_hex(16);user_id=uid()
+    with conn() as db:
+        try:
+            db.execute('''INSERT INTO staff_users(id,name,email,role,password_salt,password_hash,active,must_change_password,created_at,updated_at)
+                          VALUES(?,?,?,?,?,?,1,1,?,?)''',
+                       (user_id,name,email,role,salt,password_hash(password,salt),now(),now()))
+        except sqlite3.IntegrityError:raise HTTPException(409,'Já existe um usuário com esse e-mail.')
+        record_audit(db,actor,'create_user',user_id)
+    return {'ok':True,'id':user_id,'email':email,'role':role,'must_change_password':True}
+
+@APP.patch('/api/admin/users/{user_id}')
+async def update_staff_user(request:Request,user_id:str):
+    actor=must_manage_users(request)
+    body=await request.json()
+    allowed={'name','role','active'}
+    if not body or set(body)-allowed:raise HTTPException(422,'Envie apenas nome, perfil ou situação.')
+    with conn() as db:
+        existing=db.execute('SELECT * FROM staff_users WHERE id=?',(user_id,)).fetchone()
+        if not existing:raise HTTPException(404,'Usuário não encontrado.')
+        name=str(body.get('name',existing['name'])).strip()
+        role=str(body.get('role',existing['role']))
+        active=body.get('active',bool(existing['active']))
+        if not (2<=len(name)<=120) or role not in ('administrador','recrutador') or not isinstance(active,bool):
+            raise HTTPException(422,'Dados inválidos.')
+        db.execute('UPDATE staff_users SET name=?,role=?,active=?,updated_at=? WHERE id=?',(name,role,int(active),now(),user_id))
+        if not active or role!=existing['role']:
+            db.execute('DELETE FROM admin_sessions WHERE user_id=?',(user_id,))
+        record_audit(db,actor,'update_user',user_id)
+    return {'ok':True}
+
+@APP.post('/api/admin/users/{user_id}/reset-password')
+async def reset_staff_password(request:Request,user_id:str):
+    actor=must_manage_users(request)
+    body=await request.json()
+    password=str(body.get('new_password') or '')
+    validate_password(password)
+    salt=secrets.token_hex(16)
+    with conn() as db:
+        u=db.execute('SELECT id FROM staff_users WHERE id=?',(user_id,)).fetchone()
+        if not u:raise HTTPException(404,'Usuário não encontrado.')
+        db.execute('UPDATE staff_users SET password_salt=?,password_hash=?,must_change_password=1,updated_at=? WHERE id=?',
+                   (salt,password_hash(password,salt),now(),user_id))
+        db.execute('DELETE FROM admin_sessions WHERE user_id=?',(user_id,))
+        record_audit(db,actor,'reset_password',user_id)
+    return {'ok':True,'must_change_password':True}
 
 @APP.post('/api/admin/extract')
 async def preview(request:Request,file:UploadFile=File(...)):
@@ -286,11 +459,26 @@ async def update_questions(request:Request,v_id:str):
         if len(question)<12:continue
         label=str(q.get('category','hard'))
         if label not in ('responsabilidade','hard','soft','logistica'):label='hard'
-        cleans.append({'id':f'Q{i:02d}','category':label,'category_label':{'responsabilidade':'Responsabilidades','hard':'Hard skills','soft':'Soft skills','logistica':'Condições da vaga'}[label], 'criterion':str(q.get('criterion',''))[:250], 'origin':str(q.get('origin',''))[:500], 'line':q.get('line',0), 'differential':bool(q.get('differential',False)),'weight':max(1,min(5,int(q.get('weight',2)))),'question':question,'cv_observation':''})
+        cleans.append({'id':f'Q{i:02d}','category':label,'category_label':{'responsabilidade':'Responsabilidades','hard':'Hard skills','soft':'Soft skills','logistica':'Condições da vaga'}[label], 'criterion':str(q.get('criterion',''))[:250], 'origin':str(q.get('origin',''))[:500], 'line':q.get('line',0), 'differential':bool(q.get('differential',False)),'weight':max(1,min(5,int(q.get('weight',2)))),'question':question,'focus':str(q.get('focus',''))[:140], 'expected_evidence':str(q.get('expected_evidence',''))[:350], 'cv_observation':''})
     if not cleans:raise HTTPException(422,'Mantenha ao menos uma pergunta válida.')
     with conn() as db:
         db.execute('UPDATE vacancies SET questions_json=? WHERE id=?',(json.dumps(cleans,ensure_ascii=False),v_id))
     return {'ok':True,'questions':cleans}
+
+@APP.post('/api/admin/vacancies/{v_id}/regenerate-questions')
+async def regenerate_vacancy_questions(request:Request,v_id:str):
+    must_admin(request)
+    v=get_vacancy(v_id)
+    with conn() as db:
+        if db.execute('SELECT 1 FROM candidates WHERE vacancy_id=? LIMIT 1',(v_id,)).fetchone():
+            raise HTTPException(409,'A vaga já possui convites. Crie uma nova vaga para não alterar entrevistas iniciadas.')
+    result=build_questions(v['description'],'',18)
+    if not result['questions']:
+        raise HTTPException(422,'Não foi possível encontrar requisitos na descrição. Revise o texto importado.')
+    with conn() as db:
+        db.execute('UPDATE vacancies SET questions_json=?,warnings_json=? WHERE id=?',
+            (json.dumps(result['questions'],ensure_ascii=False),json.dumps(result['warnings'],ensure_ascii=False),v_id))
+    return {'ok':True,'questions':result['questions'],'warnings':result['warnings'],'generated':len(result['questions']),'engine':result['engine']}
 
 @APP.post('/api/admin/vacancies/{v_id}/improve-questions')
 async def improve_vacancy_questions(request:Request,v_id:str):

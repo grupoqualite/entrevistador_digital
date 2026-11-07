@@ -6,9 +6,26 @@ function info(id,text,bad=false){const el=$(id);el.classList.remove('hidden');el
 function option(elementId,value,label){const el=$(elementId);if(!el)throw new Error('Campo de seleção ausente: '+elementId);const o=document.createElement('option');o.value=String(value);o.textContent=String(label);el.append(o);return o}
 function showTab(tab){document.querySelectorAll('.tabpage').forEach(x=>x.classList.toggle('hidden',x.id!==tab));document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('selected',x.dataset.tab===tab))}
 document.querySelectorAll('[data-tab]').forEach(x=>x.onclick=()=>showTab(x.dataset.tab));
-$('loginForm').onsubmit=async e=>{e.preventDefault();try{await call('/api/login',{method:'POST',body:new URLSearchParams({password:$('pass').value})});$('authMsg').textContent='';$('signin').classList.add('hidden');$('workspace').classList.remove('hidden');$('logout').classList.remove('hidden');await refreshAll()}catch(err){$('authMsg').textContent=err.message}};
+let activeUser=null;
+async function showLoggedIn(){
+ const me=await call('/api/admin/me');activeUser=me;
+ $('signin').classList.add('hidden');$('logout').classList.remove('hidden');
+ $('currentAccount').textContent=me.name+' · '+(me.role==='administrador'?'Administrador':'Recrutador');
+ if(me.must_change_password){$('workspace').classList.add('hidden');$('changePasswordScreen').classList.remove('hidden');return;}
+ $('changePasswordScreen').classList.add('hidden');$('workspace').classList.remove('hidden');
+ $('usersTab').classList.toggle('hidden',me.role!=='administrador');
+ await refreshAll();if(me.role==='administrador')await refreshStaffUsers();
+}
+$('loginForm').onsubmit=async e=>{e.preventDefault();try{
+ await call('/api/login',{method:'POST',body:new URLSearchParams({identifier:$('identifier').value.trim(),password:$('pass').value})});
+ $('authMsg').textContent='';await showLoggedIn();
+}catch(err){$('authMsg').textContent=err.message}};
 $('logout').onclick=async()=>{await call('/api/logout',{method:'POST'});location.reload()};
-async function init(){try{await call('/api/admin/me');$('signin').classList.add('hidden');$('workspace').classList.remove('hidden');$('logout').classList.remove('hidden');await refreshAll()}catch{}}init();
+$('passwordChangeForm').onsubmit=async e=>{e.preventDefault();try{
+ if($('newPersonalPassword').value!==$('confirmPersonalPassword').value)throw new Error('As senhas não coincidem.');await call('/api/admin/me/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:$('oldPersonalPassword').value,new_password:$('newPersonalPassword').value})});
+ $('passwordChangeMsg').textContent='';$('oldPersonalPassword').value='';$('newPersonalPassword').value='';$('confirmPersonalPassword').value='';await showLoggedIn();
+}catch(err){$('passwordChangeMsg').textContent=err.message}};
+async function init(){try{await showLoggedIn()}catch{}}init();
 async function refreshAll(){await Promise.all([refreshVacancies(),refreshCandidates()])}
 async function refreshVacancies(){state.vacancies=await call('/api/admin/vacancies');let old=state.selectedVacancy||$('vacancySelect').value;for(const id of ['vacancySelect','candidateVacancy']){$(id).innerHTML='';for(const v of state.vacancies)option(id,v.id,v.title)}if(state.vacancies.length){$('vacancySelect').value=state.vacancies.some(v=>v.id===old)?old:state.vacancies[0].id;state.selectedVacancy=$('vacancySelect').value;await loadQuestions();}else{state.editing=[];drawQuestions()}}
 async function refreshCandidates(){state.candidates=await call('/api/admin/candidates');const opts=$('reportCandidate');const old=opts.value||state.selectedCandidate;opts.innerHTML='';for(const c of state.candidates)option('reportCandidate',c.id,`${c.name} · ${c.vacancy}`);if(state.candidates.length){opts.value=state.candidates.some(c=>c.id===old)?old:state.candidates[0].id;state.selectedCandidate=opts.value;await selectCandidate();}else{$('reportCandidateInfo').textContent='Sem candidatos cadastrados.';state.selectedCandidate=null;$('answersArea').innerHTML='';$('reportContent').innerHTML='<p class="hint">Cadastre um candidato primeiro.</p>'}drawCandidateList()}
@@ -17,7 +34,7 @@ $('applySheet').onclick=()=>{if(!state.sourceParts)return;const v=$('sheetSelect
 $('vacancyForm').onsubmit=async e=>{e.preventDefault();if($('jobFile').files.length && !$('jobDescription').value.trim())return info('jobMsg','Aplique o texto importado antes de gerar as perguntas.',true);try{const data=new URLSearchParams({title:$('jobTitle').value,description:$('jobDescription').value});const r=await call('/api/admin/vacancies',{method:'POST',body:data});state.selectedVacancy=r.id;await refreshVacancies();info('jobMsg',`Vaga criada com ${r.generated} perguntas. ${r.warnings.join(' ')||'Revise o questionário na área ao lado.'}`);$('vacancySelect').scrollIntoView({behavior:'smooth',block:'nearest'})}catch(err){info('jobMsg',err.message,true)}};
 $('vacancySelect').onchange=async()=>{state.selectedVacancy=$('vacancySelect').value;await loadQuestions()};
 async function loadQuestions(){if(!state.selectedVacancy)return;const v=await call(`/api/admin/vacancies/${state.selectedVacancy}`);state.editing=v.questions;drawQuestions();$('qMsg').classList.add('hidden')}
-function drawQuestions(){const el=$('questions');el.innerHTML='';$('qCounter').textContent=`${state.editing.length} perguntas`;state.editing.forEach((q,index)=>{const box=document.createElement('article');box.className='questioncard';box.innerHTML=`<div class="meta"><span class="category">${escapeHTML(q.category_label||q.category)}</span><button class="btn small outline" data-remove="${index}" type="button">Remover</button></div><textarea rows="3" data-edit="${index}" aria-label="Pergunta ${index+1}">${escapeHTML(q.question)}</textarea><div class="origin"><strong>Trecho da vaga:</strong> ${escapeHTML(q.origin||'Inserida manualmente')}<br><strong>Critério:</strong> ${escapeHTML(q.criterion||'')}</div><div class="smallrow"><span class="hint">Peso (1 a 5):</span><select data-weight="${index}">${[1,2,3,4,5].map(w=>`<option ${Number(q.weight)===w?'selected':''} value="${w}">${w}</option>`).join('')}</select><label class="hint" style="margin:0"><input data-diff="${index}" type="checkbox" style="width:auto;display:inline;margin:0" ${q.differential?'checked':''}> Diferencial</label></div>`;el.append(box)});el.querySelectorAll('[data-edit]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.edit)].question=x.value);el.querySelectorAll('[data-weight]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.weight)].weight=Number(x.value));el.querySelectorAll('[data-diff]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.diff)].differential=x.checked);el.querySelectorAll('[data-remove]').forEach(x=>x.onclick=()=>{state.editing.splice(Number(x.dataset.remove),1);drawQuestions()})}
+function drawQuestions(){const el=$('questions');el.innerHTML='';$('qCounter').textContent=`${state.editing.length} perguntas`;state.editing.forEach((q,index)=>{const box=document.createElement('article');box.className='questioncard';box.innerHTML=`<div class="meta"><span class="category">${escapeHTML(q.category_label||q.category)}</span><button class="btn small outline" data-remove="${index}" type="button">Remover</button></div><textarea rows="3" data-edit="${index}" aria-label="Pergunta ${index+1}">${escapeHTML(q.question)}</textarea><div class="origin"><strong>Foco da pergunta:</strong> ${escapeHTML(q.focus||q.category_label||'Competência da vaga')}<br><strong>O que verificar:</strong> ${escapeHTML(q.expected_evidence||'Experiência prática e resultados verificáveis')}<br><strong>Trecho da vaga:</strong> ${escapeHTML(q.origin||'Inserida manualmente')}<br><strong>Critério:</strong> ${escapeHTML(q.criterion||'')}</div><div class="smallrow"><span class="hint">Peso (1 a 5):</span><select data-weight="${index}">${[1,2,3,4,5].map(w=>`<option ${Number(q.weight)===w?'selected':''} value="${w}">${w}</option>`).join('')}</select><label class="hint" style="margin:0"><input data-diff="${index}" type="checkbox" style="width:auto;display:inline;margin:0" ${q.differential?'checked':''}> Diferencial</label></div>`;el.append(box)});el.querySelectorAll('[data-edit]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.edit)].question=x.value);el.querySelectorAll('[data-weight]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.weight)].weight=Number(x.value));el.querySelectorAll('[data-diff]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.diff)].differential=x.checked);el.querySelectorAll('[data-remove]').forEach(x=>x.onclick=()=>{state.editing.splice(Number(x.dataset.remove),1);drawQuestions()})}
 $('addQuestion').onclick=()=>{state.editing.push({question:'',category:'hard',category_label:'Hard skills',criterion:'Novo critério, inserir origem e competência.',origin:'Pergunta inserida manualmente pelo recrutador',weight:2,differential:false});drawQuestions();$('questions').scrollTop=$('questions').scrollHeight};
 $('saveQuestions').onclick=async()=>{try{state.editing.forEach((q,i)=>{const field=document.querySelector(`[data-edit="${i}"]`);if(field)q.question=field.value});const res=await call(`/api/admin/vacancies/${state.selectedVacancy}/questions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({questions:state.editing})});state.editing=res.questions;drawQuestions();info('qMsg','Questionário salvo e pronto para ser usado com os candidatos.')}catch(err){info('qMsg',err.message,true)}};
 $('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. No celular, publique em HTTPS antes de testar áudio.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
@@ -152,8 +169,35 @@ $('draftClientReport').onclick=async()=>{if(!state.selectedCandidate)return;
  }catch(e){info('analysisMsg',e.message,true)}
 };
 
-$('improveQuestions').onclick=async()=>{if(!state.selectedVacancy){info('qMsg','Selecione uma vaga.',true);return}
- try{info('qMsg','Aprimorando perguntas a partir dos requisitos da vaga.');
- const data=await call(`/api/admin/vacancies/${state.selectedVacancy}/improve-questions`,{method:'POST'});
- state.editing=data.questions;drawQuestions();info('qMsg',`${data.aprimoradas} perguntas aprimoradas. Revise o roteiro antes dos convites.`)
- }catch(e){info('qMsg',e.message,true)}};
+$('regenerateQuestions').onclick=async()=>{
+ if(!state.selectedVacancy)return info('qMsg','Selecione a vaga para regenerar as perguntas.',true);
+ if(!confirm('Isso substituirá o questionário atual desta vaga pelo roteiro derivado da descrição. Quer continuar?'))return;
+ try{
+  info('qMsg','Gerando roteiro específico com base na descrição da vaga.');
+  const data=await call(`/api/admin/vacancies/${state.selectedVacancy}/regenerate-questions`,{method:'POST'});
+  state.editing=data.questions;drawQuestions();
+  info('qMsg',`${data.generated} perguntas preparadas. Confira responsabilidades, hard skills e soft skills. ${data.warnings.join(' ')}`);
+ }catch(e){info('qMsg',e.message,true)}
+};
+
+// Gestão de usuários: acessível apenas ao administrador.
+async function refreshStaffUsers(){
+ if(!activeUser||activeUser.role!=='administrador')return;
+ const people=await call('/api/admin/users');const list=$('staffList');list.innerHTML='';
+ if(!people.length){list.innerHTML='<p class="hint">Nenhum usuário adicional cadastrado.</p>';return;}
+ for(const u of people){
+  const card=document.createElement('article');card.className='card';
+  card.innerHTML=`<h3>${escapeHTML(u.name)}</h3><p>${escapeHTML(u.email)}</p><p>${u.role==='administrador'?'Administrador':'Recrutador'} · ${u.active?'Ativo':'Inativo'} ${u.must_change_password?'· Troca de senha pendente':''}</p><div class="buttonrow"><button type="button" class="btn outline small" data-status="${escapeHTML(u.id)}">${u.active?'Desativar':'Ativar'}</button><button type="button" class="btn outline small" data-reset="${escapeHTML(u.id)}">Redefinir senha</button></div>`;
+  list.append(card);
+  card.querySelector('[data-status]').onclick=async()=>{if(!confirm(`${u.active?'Desativar':'Ativar'} o acesso de ${u.name}?`))return;try{await call(`/api/admin/users/${u.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:!u.active})});await refreshStaffUsers();}catch(e){info('usersMsg',e.message,true)}};
+  card.querySelector('[data-reset]').onclick=()=>{$('resetLabel').textContent='Usuário: '+u.name+' ('+u.email+')';window.resetUserId=u.id;$('resetPanel').classList.remove('hidden');$('resetPasswordValue').value='';$('resetPasswordConfirm').value='';$('resetPanel').scrollIntoView({behavior:'smooth',block:'nearest'});};
+ }
+}
+$('createUserForm').onsubmit=async e=>{e.preventDefault();try{if($('staffPassword').value!==$('staffPasswordConfirm').value)throw new Error('As senhas não coincidem.');const data={name:$('staffName').value.trim(),email:$('staffEmail').value.trim(),role:$('staffRole').value,password:$('staffPassword').value};await call('/api/admin/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});$('createUserForm').reset();info('usersMsg','Conta criada. Compartilhe o e-mail e a senha provisória em canal seguro; a pessoa deverá alterá-la ao entrar.');await refreshStaffUsers();}catch(err){info('usersMsg',err.message,true)}};
+
+$('cancelReset').onclick=()=>{$('resetPanel').classList.add('hidden');window.resetUserId=null};
+$('resetPasswordForm').onsubmit=async e=>{e.preventDefault();if(!window.resetUserId)return;try{
+  if($('resetPasswordValue').value!==$('resetPasswordConfirm').value)throw new Error('As senhas não coincidem.');
+  await call(`/api/admin/users/${window.resetUserId}/reset-password`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_password:$('resetPasswordValue').value})});
+  $('resetPanel').classList.add('hidden');window.resetUserId=null;info('usersMsg','Senha provisória redefinida. Compartilhe-a com o usuário por canal seguro.');await refreshStaffUsers();
+}catch(e){info('usersMsg',e.message,true)}};
