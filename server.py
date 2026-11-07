@@ -812,11 +812,27 @@ if __name__=='__main__':
 async def public_security(request:Request,call_next):
     if PRODUCTION and request.method in ('POST','PUT','PATCH','DELETE'):
         from urllib.parse import urlsplit
-        expected=urlsplit(os.environ['ENTREVISTADOR_PUBLIC_URL']).netloc
-        origin=request.headers.get('origin')
-        referer=request.headers.get('referer')
-        host=urlsplit(origin).netloc if origin else urlsplit(referer).netloc if referer else ''
-        if host!=expected:
+        # Verifica a origem quando enviada. Navegadores e webviews podem omitir
+        # Origin e Referer em solicitações legítimas, inclusive com política
+        # Referrer-Policy: no-referrer, que este servidor utiliza.
+        public=urlsplit(os.environ['ENTREVISTADOR_PUBLIC_URL'].strip())
+        expected_host=public.netloc.lower()
+        request_host=(request.headers.get('host') or '').strip().lower()
+        origin=(request.headers.get('origin') or '').strip()
+        referer=(request.headers.get('referer') or '').strip()
+        fetch_site=(request.headers.get('sec-fetch-site') or '').strip().lower()
+        blocked=False
+        if request_host!=expected_host or fetch_site in ('cross-site','same-site'):
+            blocked=True
+        elif origin:
+            o=urlsplit(origin)
+            blocked=(o.scheme!='https' or o.netloc.lower()!=expected_host)
+        elif referer:
+            r=urlsplit(referer)
+            blocked=(r.scheme!='https' or r.netloc.lower()!=expected_host)
+        elif fetch_site not in ('','same-origin','none'):
+            blocked=True
+        if blocked:
             return JSONResponse({'detail':'Origem da solicitação não autorizada.'},status_code=403)
     response=await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'

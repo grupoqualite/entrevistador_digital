@@ -1,0 +1,16 @@
+CORREÇÃO DO LOGIN, V9 RENDER FREE
+
+Causa reproduzida: o middleware public_security exigia Origin ou Referer em todos os POSTs. Em navegadores que não os enviam, bloqueava /api/login com HTTP 403, mesmo com senha correta. A aplicação também utiliza Referrer-Policy: no-referrer.
+
+Correção: valida a URL pública, o cabeçalho Host, o Origin/Referer quando disponíveis e Sec-Fetch-Site. Bloqueia origens divergentes, mas não rejeita automaticamente solicitações legítimas sem Origin/Referer.
+
+1. No GitHub, abra a raiz do repositório entrevistador-digital.
+2. Substitua APENAS server.py pelo arquivo deste pacote, mantendo seu nome e localização.
+3. Faça Commit changes na branch main.
+4. No Render, Manual Deploy -> Deploy latest commit. Não altere a senha novamente.
+5. Teste o login em https://entrevistador-digital.onrender.com/ usando a senha salva na variável ENTREVISTADOR_ADMIN_PASSWORD.
+6. Acesse /api/health para checar que o servidor responde.
+
+Se continuar a falhar, copie apenas a mensagem do erro abaixo do botão de login, sem compartilhar a senha.
+
+MANTER CANDIDATOS REAIS FORA DO PILOTO: Render Free não persiste SQLite, currículos, áudios e relatórios em reinicializações. Esta correção não resolve esse requisito de segurança e persistência.
