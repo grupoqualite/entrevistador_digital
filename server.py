@@ -210,7 +210,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.1','storage':'persistent SQLite','transcription':'faster-whisper cpu pt-BR (fila de processamento)','analysis':'local_optional'}
+def health():return {'ok':True,'version':'9.1-free-pilot','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...)):
@@ -444,7 +444,7 @@ from functools import lru_cache
 def get_whisper_model():
     """CPU e quantização int8. Modelo multilingue vem pré-carregado no Docker."""
     from faster_whisper import WhisperModel
-    model_name=os.environ.get('ENTREVISTADOR_WHISPER_MODEL','/opt/whisper/base')
+    model_name=os.environ.get('ENTREVISTADOR_WHISPER_MODEL','/opt/whisper/tiny')
     return WhisperModel(model_name,device='cpu',compute_type='int8',cpu_threads=1,num_workers=1)
 
 def transcribe_pending_audio(cid:str,job_id:str|None=None):
