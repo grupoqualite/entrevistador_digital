@@ -58,7 +58,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.6.1',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.6.2',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -273,7 +273,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.6.1-evidence-draft','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.6.2-upload-fix','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -1015,15 +1015,22 @@ def backup_local(request:Request):
     must_admin(request)
     import zipfile
     stream=io.BytesIO()
-    with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
-        z.write(DB,'dados.sqlite3')
-        total=0
-        for file in UPLOADS.rglob('*'):
-            if not file.is_file():continue
-            total+=file.stat().st_size
-            if total>200*1024*1024:raise HTTPException(413,'Backup acima de 200 MB; faça cópia pelo sistema de arquivos.')
-            z.write(file,'arquivos/'+str(file.relative_to(UPLOADS)))
-        z.writestr('LEIA-ME.txt','Cópia de arquivos de teste. Contém dados pessoais. NÃO compartilhar com candidatos. Não inclui a chave administrativa.\n')
+    # Snapshot consistente do SQLite, incluindo transações ainda no WAL.
+    # Nunca arquive só o arquivo .sqlite3 enquanto o banco estiver aberto em WAL.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='ed_backup_') as tmp:
+        snapshot=Path(tmp)/'dados.sqlite3'
+        with sqlite3.connect(DB) as origem, sqlite3.connect(snapshot) as destino:
+            origem.backup(destino)
+        with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
+            z.write(snapshot,'dados.sqlite3')
+            total=0
+            for file in UPLOADS.rglob('*'):
+                if not file.is_file():continue
+                total+=file.stat().st_size
+                if total>200*1024*1024:raise HTTPException(413,'Backup acima de 200 MB; faça cópia pelo sistema de arquivos.')
+                z.write(file,'arquivos/'+str(file.relative_to(UPLOADS)))
+            z.writestr('LEIA-ME.txt','Cópia de arquivos de teste. Contém dados pessoais. NÃO compartilhar com candidatos. Não inclui a chave administrativa.\n')
     return Response(stream.getvalue(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="backup_entrevistador_digital.zip"'})
 
 @APP.get('/api/admin/candidates/{cid}/report.json')

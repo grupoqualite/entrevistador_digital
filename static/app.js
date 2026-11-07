@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.6.1-evidence-draft';
+const versaoEsperada = '9.6.2-upload-fix';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -52,14 +52,38 @@ $('saveQuestions').onclick=async()=>{try{state.editing.forEach((q,i)=>{const fie
 $('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. No celular, publique em HTTPS antes de testar áudio.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
 function drawCandidateList(){const el=$('candidateCards');el.innerHTML=state.candidates.length?'':'<p class="hint">Ainda não há candidatos.</p>';for(const c of state.candidates){const box=document.createElement('article');box.className='card';box.innerHTML=`<h3>${escapeHTML(c.name)}</h3><p>${escapeHTML(c.vacancy)}</p><p><span class="category">${escapeHTML(c.status)}</span></p><button type="button" class="btn small outline" data-open-candidate="${escapeHTML(c.id)}">Analisar entrevista</button>`;el.append(box)}el.querySelectorAll('[data-open-candidate]').forEach(x=>x.onclick=async()=>{showTab('reports');$('reportCandidate').value=x.dataset.openCandidate;await selectCandidate()})}
 $('reportCandidate').onchange=selectCandidate;
-$('materialsForm').onsubmit=async e=>{e.preventDefault();if(!state.selectedCandidate)return;
- try{const fd=new FormData();let any=false;for(const name of ['cv','disc','disc_comparativo','linkedin_pdf']){
-  const file=e.currentTarget.querySelector(`[name="${name}"]`)?.files?.[0];if(file){fd.append(name,file);any=true;}}
-  if(!any)throw new Error('Selecione pelo menos um documento.');
-  const result=await call(`/api/admin/candidates/${state.selectedCandidate}/materials`,{method:'POST',body:fd});
-  info('materialsMsg',result.message+' Tamanho de texto extraído: currículo '+result.extraido.curriculo+', DISC '+result.extraido.disc+', LinkedIn '+result.extraido.linkedin+' caracteres.');
-  e.currentTarget.reset();await selectCandidate();
- }catch(err){info('materialsMsg',err.message,true)}
+$('materialsForm').onsubmit=async e=>{
+ e.preventDefault();
+ // Guarde o formulário ANTES do primeiro await: currentTarget deixa de existir após o despacho do evento.
+ const form=e.currentTarget;
+ const cid=state.selectedCandidate;
+ if(!cid){info('materialsMsg','Selecione um candidato antes de anexar documentos.',true);return;}
+ const fd=new FormData();
+ let any=false;
+ for(const name of ['cv','disc','disc_comparativo','linkedin_pdf']){
+  const file=form.querySelector(`[name="${name}"]`)?.files?.[0];
+  if(file && file.name){fd.append(name,file);any=true;}
+ }
+ if(!any){info('materialsMsg','Selecione pelo menos um documento.',true);return;}
+ const sendButton=form.querySelector('button[type="submit"]');
+ if(sendButton)sendButton.disabled=true;
+ info('materialsMsg','Enviando documentos e extraindo o texto...');
+ try{
+  const result=await call(`/api/admin/candidates/${encodeURIComponent(cid)}/materials`,{method:'POST',body:fd});
+  const extracted=result.extraido||{};
+  const confirmation=(result.message||'Documentos recebidos.')+' Texto extraído: currículo '+(extracted.curriculo??0)+', DISC '+(extracted.disc??0)+', LinkedIn '+(extracted.linkedin??0)+' caracteres.';
+  // Só apague os arquivos selecionados após o servidor confirmar o recebimento.
+  form.reset();
+  try{
+   if(state.selectedCandidate===cid)await selectCandidate();
+   info('materialsMsg',confirmation);
+  }catch(refreshError){
+   // Uma falha na atualização do painel NÃO deve transformar um upload concluído em erro de envio.
+   info('materialsMsg',confirmation+' A atualização do painel falhou; recarregue a página para conferir os documentos.');
+  }
+ }catch(err){
+  info('materialsMsg','Não foi possível confirmar o envio: '+err.message+'. Confira o status do candidato antes de tentar novamente.',true);
+ }finally{if(sendButton)sendButton.disabled=false;}
 };
 let transcriptionWatch=null;
 function transcriptionSummary(job){
