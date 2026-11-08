@@ -1,8 +1,8 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.6.2-upload-fix';
+const versaoEsperada = '9.6.3-backup-restore';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
-const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm'];
+const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
 if (versaoPagina !== versaoEsperada || ausentes.length) {
   const aviso = document.getElementById('authMsg');
@@ -26,6 +26,7 @@ async function showLoggedIn(){
  if(me.must_change_password){$('workspace').classList.add('hidden');$('changePasswordScreen').classList.remove('hidden');return;}
  $('changePasswordScreen').classList.add('hidden');$('workspace').classList.remove('hidden');
  $('usersTab').classList.toggle('hidden',me.role!=='administrador');
+ $('backup').classList.toggle('hidden',me.role!=='administrador');
  await refreshAll();if(me.role==='administrador')await refreshStaffUsers();
 }
 $('loginForm').onsubmit=async e=>{e.preventDefault();try{
@@ -204,6 +205,25 @@ $('removeLogo').onclick=async()=>{
  catch(e){$('logoMessage').textContent=e.message}
 };
 $('backup').onclick=()=>{location.href='/api/admin/backup.zip'};
+$('restoreForm').onsubmit=async e=>{
+ e.preventDefault();
+ if(!activeUser || activeUser.role!=='administrador')return info('restoreMsg','Somente administradores podem restaurar backups.',true);
+ const f=$('restoreFile').files[0];const confirmation=$('restoreConfirmation').value;
+ if(!f || !f.name.toLowerCase().endsWith('.zip'))return info('restoreMsg','Selecione um backup em formato ZIP.',true);
+ if(confirmation!=='RESTAURAR BACKUP')return info('restoreMsg','Digite exatamente RESTAURAR BACKUP.',true);
+ if(!confirm('ATENÇÃO: a restauração substituirá usuários, vagas, candidatos, entrevistas, áudios e pareceres atuais. Fez um backup do estado atual?'))return;
+ const button=$('restoreButton');button.disabled=true;
+ info('restoreMsg','Enviando e verificando backup. Não atualize a página durante a restauração.');
+ try{
+  const form=new FormData();form.append('file',f);form.append('confirmation',confirmation);
+  const result=await call('/api/admin/backup/restore',{method:'POST',body:form});
+  info('restoreMsg',result.message||'Backup restaurado. Faça login novamente.');
+  alert('Backup restaurado. Todas as sessões foram encerradas. Entre novamente com uma conta existente no backup ou com a senha principal do Render.');
+  location.reload();
+ }catch(err){info('restoreMsg','Restauração não concluída: '+err.message,true)}
+ finally{button.disabled=false}
+};
+
 
 $('draftClientReport').onclick=async()=>{if(!state.selectedCandidate)return;
  try{info('analysisMsg','Preparando rascunho fundamentado das seções. É necessária revisão editorial.');

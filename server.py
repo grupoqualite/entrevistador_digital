@@ -1,7 +1,7 @@
 """Entrevistador Digital V7: matriz técnica por evidências, áudio e homologação humana."""
 from __future__ import annotations
-import os, json, sqlite3, secrets, hashlib, time, re, io, html
-from pathlib import Path
+import os, json, sqlite3, secrets, hashlib, time, re, io, html, zipfile, tempfile, shutil, threading, stat
+from pathlib import Path, PurePosixPath
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, Form, File, UploadFile, HTTPException, Res
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether, HRFlowable
@@ -45,6 +46,9 @@ DATA.mkdir(parents=True,exist_ok=True);UPLOADS.mkdir(parents=True,exist_ok=True)
 try:os.chmod(DATA,0o700);os.chmod(UPLOADS,0o700)
 except OSError:pass
 DB=DATA/'dados.sqlite3'
+DB_OPERATION_LOCK=threading.RLock()
+RESTORE_LOCK=threading.Lock()
+RESTORE_ACTIVE=threading.Event()
 ADMIN_KEY_FILE=DATA/'CHAVE_ADMINISTRATIVA.txt'
 if os.environ.get('ENTREVISTADOR_ADMIN_PASSWORD'):
     ADMIN_PASS=os.environ['ENTREVISTADOR_ADMIN_PASSWORD']
@@ -58,17 +62,19 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.6.2',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.6.3',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
 def conn():
-    db=sqlite3.connect(DB,timeout=15);db.row_factory=sqlite3.Row
-    db.execute('PRAGMA busy_timeout=15000')
-    db.execute('PRAGMA foreign_keys = ON')
-    try:
-        yield db;db.commit()
-    finally:db.close()
+    # Garante que nenhuma operação da aplicação use o SQLite durante a troca do backup.
+    with DB_OPERATION_LOCK:
+        db=sqlite3.connect(DB,timeout=15);db.row_factory=sqlite3.Row
+        db.execute('PRAGMA busy_timeout=15000')
+        db.execute('PRAGMA foreign_keys = ON')
+        try:
+            yield db;db.commit()
+        finally:db.close()
 with conn() as db:
     db.execute('PRAGMA journal_mode=WAL')
     db.executescript('''
@@ -273,7 +279,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.6.2-upload-fix','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.6.3-backup-restore','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -1009,29 +1015,194 @@ def download_internal_pdf(request:Request,cid:str):
     content=pdf_doc(json.loads(row['report_json']))
     return Response(content,media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="avaliacao_interna_{cid}.pdf"'})
 
+BACKUP_MAX_UNCOMPRESSED=220*1024*1024  # banco e anexos; proteção contra ZIP bombs
+BACKUP_MAX_COMPRESSED=210*1024*1024
+BACKUP_MAX_ENTRIES=3000
+
+
+def _checked_backup_members(z:zipfile.ZipFile):
+    """Somente o layout produzido pelo aplicativo: dados.sqlite3, arquivos/ e branding/."""
+    members=z.infolist()
+    if len(members)>BACKUP_MAX_ENTRIES:
+        raise HTTPException(413,'Backup excede o limite de arquivos.')
+    size=0;names=set();db_found=False
+    for member in members:
+        name=member.filename
+        if not name or '\\' in name or name.startswith('/') or '\x00' in name:
+            raise HTTPException(422,'Backup contém caminho inválido.')
+        parts=PurePosixPath(name).parts
+        if any(part in ('.','..','') for part in parts):
+            raise HTTPException(422,'Backup contém caminho inseguro.')
+        if name in names:raise HTTPException(422,'Backup contém arquivo duplicado.')
+        names.add(name)
+        is_directory=member.is_dir()
+        mode=(member.external_attr >> 16)
+        if stat.S_ISLNK(mode):raise HTTPException(422,'Links simbólicos não são aceitos no backup.')
+        if is_directory:continue
+        if name=='dados.sqlite3':db_found=True
+        elif name=='LEIA-ME.txt':pass
+        elif name.startswith('arquivos/') and len(parts)>=2:pass
+        elif name=='branding/logo.png':pass
+        else:raise HTTPException(422,'Arquivo inesperado dentro do backup: '+name[:120])
+        size+=member.file_size
+        if size>BACKUP_MAX_UNCOMPRESSED:
+            raise HTTPException(413,'Conteúdo descompactado supera 220 MB.')
+        if name=='dados.sqlite3' and member.file_size>100*1024*1024:
+            raise HTTPException(413,'Banco de dados acima do limite de segurança.')
+    if not db_found:raise HTTPException(422,'Backup sem dados.sqlite3.')
+    return members
+
+
+def _validate_restored_db(path:Path,files_dir:Path):
+    try:
+        db=sqlite3.connect(path)
+        db.row_factory=sqlite3.Row
+        try:
+            check=db.execute('PRAGMA integrity_check').fetchone()[0]
+            if check!='ok':raise ValueError('Integridade do banco comprometida.')
+            errors=db.execute('PRAGMA foreign_key_check').fetchall()
+            if errors:raise ValueError('Relacionamentos do banco inconsistentes.')
+            expected={'vacancies','candidates','answers','reports','admin_sessions','staff_users','staff_audit','analysis_jobs','transcription_jobs'}
+            found={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not expected.issubset(found):
+                raise ValueError('Backup incompatível: faltam tabelas obrigatórias.')
+            forbidden=db.execute("SELECT name FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1").fetchone()
+            if forbidden:raise ValueError('Backup contém objetos SQL não permitidos.')
+            for table,fields in (('candidates',('cv_file','disc_file','linkedin_file')),('answers',('audio_file',))):
+                for field in fields:
+                    for (value,) in db.execute(f'SELECT {field} FROM {table} WHERE {field} IS NOT NULL AND {field} != ?',('',)):
+                        path_text=str(value)
+                        parts=PurePosixPath(path_text).parts
+                        if (not parts or any(t in ('','.','..') for t in parts)
+                            or path_text.startswith('/') or '\\' in path_text
+                            or not (files_dir.joinpath(*parts)).is_file()):
+                            raise ValueError('Backup incompleto: anexo referenciado não encontrado.')
+        finally:db.close()
+    except (sqlite3.DatabaseError,ValueError) as exc:
+        raise HTTPException(422,'Backup inválido: '+str(exc)) from exc
+
+
 @APP.get('/api/admin/backup.zip')
 def backup_local(request:Request):
-    """Exportação manual para arquivar no Drive. Contém dados pessoais; proteção é responsabilidade do administrador."""
-    must_admin(request)
-    import zipfile
-    stream=io.BytesIO()
-    # Snapshot consistente do SQLite, incluindo transações ainda no WAL.
-    # Nunca arquive só o arquivo .sqlite3 enquanto o banco estiver aberto em WAL.
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix='ed_backup_') as tmp:
-        snapshot=Path(tmp)/'dados.sqlite3'
-        with sqlite3.connect(DB) as origem, sqlite3.connect(snapshot) as destino:
-            origem.backup(destino)
-        with zipfile.ZipFile(stream,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
-            z.write(snapshot,'dados.sqlite3')
-            total=0
-            for file in UPLOADS.rglob('*'):
-                if not file.is_file():continue
-                total+=file.stat().st_size
-                if total>200*1024*1024:raise HTTPException(413,'Backup acima de 200 MB; faça cópia pelo sistema de arquivos.')
-                z.write(file,'arquivos/'+str(file.relative_to(UPLOADS)))
-            z.writestr('LEIA-ME.txt','Cópia de arquivos de teste. Contém dados pessoais. NÃO compartilhar com candidatos. Não inclui a chave administrativa.\n')
-    return Response(stream.getvalue(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="backup_entrevistador_digital.zip"'})
+    """Backup privativo: qualquer administrador ativo, incluindo administradores secundários."""
+    must_manage_users(request)
+    directory=Path(tempfile.mkdtemp(prefix='ed_backup_'))
+    snapshot=directory/'dados.sqlite3'
+    archive=directory/'backup_entrevistador_digital.zip'
+    try:
+        with DB_OPERATION_LOCK:
+            with sqlite3.connect(DB) as origem,sqlite3.connect(snapshot) as destino:
+                origem.backup(destino)
+            with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
+                z.write(snapshot,'dados.sqlite3')
+                total=snapshot.stat().st_size
+                for file in UPLOADS.rglob('*'):
+                    if not file.is_file():continue
+                    total+=file.stat().st_size
+                    if total>BACKUP_MAX_UNCOMPRESSED:
+                        raise HTTPException(413,'Backup acima de 220 MB; faça cópia pelo sistema de arquivos.')
+                    z.write(file,'arquivos/'+str(file.relative_to(UPLOADS)))
+                if LOGO_PATH.is_file():z.write(LOGO_PATH,'branding/logo.png')
+                z.writestr('LEIA-ME.txt','Backup privativo do Entrevistador Digital. Contém dados pessoais. Não inclui a senha principal do Render.\n')
+        if archive.stat().st_size>BACKUP_MAX_COMPRESSED:
+            raise HTTPException(413,'Backup comprimido excede 210 MB.')
+        return FileResponse(archive,media_type='application/zip',filename='backup_entrevistador_digital.zip',
+            headers={'Cache-Control':'no-store'},background=BackgroundTask(shutil.rmtree,directory,ignore_errors=True))
+    except Exception:
+        shutil.rmtree(directory,ignore_errors=True)
+        raise
+
+
+@APP.post('/api/admin/backup/restore')
+async def restore_backup(request:Request,file:UploadFile=File(...),confirmation:str=Form(...)):
+    """Todo administrador ativo pode restaurar; recrutadores não têm esta permissão."""
+    actor=must_manage_users(request)
+    if confirmation!='RESTAURAR BACKUP':
+        raise HTTPException(422,'Confirme exatamente: RESTAURAR BACKUP.')
+    if not (file.filename or '').lower().endswith('.zip'):
+        raise HTTPException(415,'Selecione um arquivo ZIP de backup.')
+    if not RESTORE_LOCK.acquire(blocking=False):
+        raise HTTPException(409,'Outra restauração já está em andamento.')
+    try:
+        with tempfile.TemporaryDirectory(prefix='ed_restore_',dir=DATA) as directory:
+            stage=Path(directory)
+            incoming=stage/'incoming.zip'
+            length=0
+            zip_digest=hashlib.sha256()
+            with incoming.open('wb') as out:
+                while chunk:=await file.read(1024*1024):
+                    length+=len(chunk)
+                    if length>BACKUP_MAX_COMPRESSED:
+                        raise HTTPException(413,'ZIP de backup excede 210 MB.')
+                    out.write(chunk)
+                    zip_digest.update(chunk)
+            if not length or not zipfile.is_zipfile(incoming):
+                raise HTTPException(422,'O arquivo enviado não é um ZIP válido.')
+            staged_db=stage/'restored.sqlite3'
+            staged_files=stage/'restored_files';staged_files.mkdir()
+            staged_logo=stage/'restored_logo.png'
+            try:
+                with zipfile.ZipFile(incoming) as z:
+                    members=_checked_backup_members(z)
+                    for member in members:
+                        if member.is_dir() or member.filename=='LEIA-ME.txt':continue
+                        if member.filename=='dados.sqlite3':target=staged_db
+                        elif member.filename=='branding/logo.png':target=staged_logo
+                        else:target=staged_files.joinpath(*PurePosixPath(member.filename).parts[1:])
+                        target.parent.mkdir(parents=True,exist_ok=True)
+                        with z.open(member) as src,target.open('wb') as dest:
+                            shutil.copyfileobj(src,dest,length=1024*1024)
+            except (zipfile.BadZipFile,OSError,RuntimeError) as err:
+                raise HTTPException(422,'Não foi possível validar ou extrair o backup: '+str(err)) from err
+            _validate_restored_db(staged_db,staged_files)
+
+            # Restaurações ocorrem sem jobs em andamento, evitando arquivos em uso pelo worker.
+            with DB_OPERATION_LOCK:
+                with sqlite3.connect(DB) as running:
+                    active_tasks=running.execute("SELECT (SELECT count(*) FROM analysis_jobs WHERE status IN ('queued','running')) + (SELECT count(*) FROM transcription_jobs WHERE status IN ('queued','running'))").fetchone()[0]
+                    if active_tasks:
+                        raise HTTPException(409,'Existem análises ou transcrições em andamento. Aguarde a conclusão e tente novamente.')
+            RESTORE_ACTIVE.set()
+            try:
+                with DB_OPERATION_LOCK:
+                    previous_db=stage/'previous.sqlite3'
+                    with sqlite3.connect(DB) as old,sqlite3.connect(previous_db) as dest:
+                        old.backup(dest)
+                    with sqlite3.connect(staged_db) as new_db:
+                        new_db.execute('DELETE FROM admin_sessions')
+                        new_db.execute("UPDATE analysis_jobs SET status='failed',error='Job interrompido pela restauração.' WHERE status IN ('queued','running')")
+                        new_db.execute("UPDATE transcription_jobs SET status='interrompido',error='Transcrição interrompida pela restauração.' WHERE status IN ('queued','running')")
+                        record_audit(new_db,actor,'restore_backup',f'ZIP_SHA256:{zip_digest.hexdigest()[:24]}')
+                        new_db.commit()
+                        new_db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                    old_files=stage/'previous_files';old_logo=stage/'previous_logo.png'
+                    moved_files=False;moved_new_files=False;moved_logo=False;installed_logo=False;new_db_installed=False
+                    try:
+                        # Finaliza os arquivos WAL do banco antigo antes da substituição.
+                        with sqlite3.connect(DB) as old:old.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                        for suffix in ('-wal','-shm'):
+                            Path(str(DB)+suffix).unlink(missing_ok=True)
+                        if UPLOADS.exists():os.replace(UPLOADS,old_files);moved_files=True
+                        os.replace(staged_files,UPLOADS);moved_new_files=True
+                        if staged_logo.exists():
+                            LOGO_PATH.parent.mkdir(parents=True,exist_ok=True)
+                            if LOGO_PATH.exists():os.replace(LOGO_PATH,old_logo);moved_logo=True
+                            os.replace(staged_logo,LOGO_PATH);installed_logo=True
+                        os.replace(staged_db,DB);new_db_installed=True
+                        for suffix in ('-wal','-shm'):
+                            Path(str(DB)+suffix).unlink(missing_ok=True)
+                    except Exception:
+                        # Retoma o estado anterior, inclusive anexos e identidade visual.
+                        if new_db_installed:os.replace(previous_db,DB)
+                        if moved_new_files and UPLOADS.exists():shutil.rmtree(UPLOADS)
+                        if moved_files:os.replace(old_files,UPLOADS)
+                        if installed_logo:LOGO_PATH.unlink(missing_ok=True)
+                        if moved_logo:os.replace(old_logo,LOGO_PATH)
+                        raise
+            finally:RESTORE_ACTIVE.clear()
+        return {'ok':True,'message':'Backup restaurado. Todas as sessões foram encerradas. Entre novamente para continuar.','requires_relogin':True,'restored_by':actor['name']}
+    finally:
+        RESTORE_LOCK.release()
 
 @APP.get('/api/admin/candidates/{cid}/report.json')
 def download_json(request:Request,cid:str):
@@ -1049,6 +1220,8 @@ if __name__=='__main__':
 
 @APP.middleware('http')
 async def public_security(request:Request,call_next):
+    if RESTORE_ACTIVE.is_set() and request.url.path!='/api/admin/backup/restore':
+        return JSONResponse({'detail':'Restauração de backup em andamento. Tente novamente em seguida.'},status_code=503)
     if PRODUCTION and request.method in ('POST','PUT','PATCH','DELETE'):
         from urllib.parse import urlsplit
         # O endereço público configurado serve para links; a validação CSRF
