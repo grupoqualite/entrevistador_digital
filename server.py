@@ -62,7 +62,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.7.0',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.7.2',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -344,7 +344,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.0-documental-review','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.2-editorial-review','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -1095,6 +1095,70 @@ async def approve_client_report(request:Request,cid:str):
                    (json.dumps(report,ensure_ascii=False),now(),cid))
     with conn() as db:record_audit(db,actor,'approve_client_report',cid)
     return {'ok':True,'approved_at':report['client_approved_at']}
+
+
+@APP.post('/api/admin/candidates/{cid}/approve-and-export.pdf')
+async def approve_and_export_pdf(request:Request,cid:str):
+    """Salva a revisão, registra aprovação humana e entrega o PDF em UMA operação.
+
+    A geração acontece antes do commit: caso falhe, nenhuma aprovação é registrada.
+    A matriz interna, notas e evidências originais não são alteradas.
+    """
+    actor=must_admin(request)
+    payload=await request.json()
+    if not isinstance(payload,dict) or payload.get('confirmed') is not True:
+        raise HTTPException(422,'Confirme expressamente a conferência do parecer antes da aprovação.')
+    def get_paragraphs(key):
+        value=payload.get(key)
+        if not isinstance(value,str) or not value.strip():
+            raise HTTPException(422,f'Preencha o campo {key} antes de aprovar.')
+        if len(value)>15000:
+            raise HTTPException(422,f'O campo {key} excede 15.000 caracteres.')
+        paragraphs=[x.strip() for x in re.split(r'\n\s*\n',value) if x.strip()]
+        if len(paragraphs)>18:
+            raise HTTPException(422,f'O campo {key} excede o limite de 18 parágrafos.')
+        return paragraphs
+    tech=get_paragraphs('tecnicas')
+    behavior=get_paragraphs('comportamentais')
+    reco=payload.get('recomendacao')
+    if not isinstance(reco,str) or not reco.strip():
+        raise HTTPException(422,'Preencha o Parecer de Recomendação antes de aprovar.')
+    if len(reco)>7000:
+        raise HTTPException(422,'A recomendação excede o limite de 7.000 caracteres.')
+    with conn() as db:
+        candidate=db.execute('SELECT status FROM candidates WHERE id=?',(cid,)).fetchone()
+        saved=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+        if not candidate or not saved:
+            raise HTTPException(404,'Candidato ou minuta não encontrados. Selecione o candidato novamente.')
+        if candidate['status']!='concluido':
+            raise HTTPException(409,'A entrevista ainda não foi concluída.')
+        report=json.loads(saved['report_json'])
+        previous=report.get('client_sections') or {}
+        report['client_sections']={
+            'tecnicas':tech,
+            'comportamentais':behavior,
+            'recomendacao':reco.strip(),
+            'validacoes_tecnicas':previous.get('validacoes_tecnicas') or [],
+            'validacoes_comportamentais':previous.get('validacoes_comportamentais') or [],
+        }
+        report['client_edited_at']=now()
+        report['client_approved_at']=now()
+        report['client_approved_by']=actor['id']
+        report.pop('client_preview',None)
+        try:
+            content=render_client_pdf(report)
+            if not content.startswith(b'%PDF-'):
+                raise ValueError('Arquivo PDF inválido.')
+        except Exception:
+            raise HTTPException(500,'Falha ao gerar o PDF. A aprovação não foi registrada. Confira o texto e tente novamente.')
+        db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',
+                   (json.dumps(report,ensure_ascii=False),now(),cid))
+        record_audit(db,actor,'approve_and_export_client_pdf',cid)
+    return Response(content,media_type='application/pdf',headers={
+        'Content-Disposition':f'attachment; filename="parecer_cliente_{cid}.pdf"',
+        'Cache-Control':'no-store',
+        'X-Content-Type-Options':'nosniff',
+    })
 
 
 @APP.get('/api/admin/candidates/{cid}/report-preview.pdf')

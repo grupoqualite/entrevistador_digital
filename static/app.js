@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.7.0-documental-review';
+const versaoEsperada = '9.7.2-editorial-review';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.7.0-documental-review'){
-      indicador.textContent='V9.7.0 · Dossiês revisáveis';
+    if(versao==='9.7.2-editorial-review'){
+      indicador.textContent='V9.7.2 · Parecer aprofundado';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.7.0. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.7.2. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
@@ -225,11 +225,31 @@ $('saveClientReport').onclick=async()=>{
  }catch(err){info('analysisMsg',err.message,true)}
 };
 $('approveClientReport').onclick=async()=>{
- if(!state.selectedCandidate)return info('analysisMsg','Selecione um candidato.',true);
- if(!confirm('Você conferiu currículo, DISC, respostas, lacunas e as três seções? A aprovação autoriza a exportação para o cliente.'))return;
- try{await call(`/api/admin/candidates/${state.selectedCandidate}/approve-client-report`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true})});
-     await selectCandidate();info('analysisMsg','Parecer aprovado. Agora você pode baixar o PDF para o cliente.');
- }catch(err){info('analysisMsg',err.message,true)}
+ const cid=state.selectedCandidate;
+ if(!cid)return info('analysisMsg','Selecione um candidato.',true);
+ const sections={tecnicas:$('clientTech').value.trim(),comportamentais:$('clientBehavior').value.trim(),recomendacao:$('clientRecommendation').value.trim()};
+ if(!sections.tecnicas || !sections.comportamentais || !sections.recomendacao){
+   const missing=[!sections.tecnicas?'Competências Técnicas':null,!sections.comportamentais?'Competências Comportamentais':null,!sections.recomendacao?'Parecer de Recomendação':null].filter(Boolean).join(', ');
+   return info('analysisMsg','Preencha as seções antes de aprovar: '+missing+'.',true);
+ }
+ if(!confirm('Confirma que conferiu as fontes e revisou as três seções? O texto será salvo, aprovado e o PDF será gerado para o cliente.'))return;
+ const button=$('approveClientReport');button.disabled=true;
+ info('analysisMsg','Salvando, aprovando e gerando o PDF. Não feche a página.');
+ try{
+   const res=await fetch(`/api/admin/candidates/${encodeURIComponent(cid)}/approve-and-export.pdf`,{
+      method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',
+      body:JSON.stringify({confirmed:true,...sections}),cache:'no-store'
+   });
+   if(!res.ok){let error;try{error=await res.json()}catch{}throw new Error(error?.detail||`Não foi possível gerar o PDF (HTTP ${res.status}).`)}
+   const blob=await res.blob();
+   if(!blob.size || !(await blob.slice(0,5).text()).startsWith('%PDF-'))throw new Error('O servidor não retornou um PDF válido. Use Baixar parecer aprovado PDF para tentar novamente.');
+   const href=URL.createObjectURL(blob),link=document.createElement('a');
+   link.href=href;link.download=`parecer_cliente_${cid}.pdf`;document.body.append(link);link.click();link.remove();
+   setTimeout(()=>URL.revokeObjectURL(href),60000);
+   info('analysisMsg','Parecer aprovado e PDF gerado. Se o navegador não tiver iniciado o download, clique em Baixar parecer aprovado PDF.');
+   await selectCandidate();
+ }catch(err){info('analysisMsg','Não foi possível concluir: '+err.message+' Nenhum texto digitado foi descartado.',true)}
+ finally{button.disabled=false}
 };
 $('downloadJson').onclick=()=>{if(state.selectedCandidate)location.href=`/api/admin/candidates/${state.selectedCandidate}/report.json`};
 
@@ -264,7 +284,9 @@ $('restoreForm').onsubmit=async e=>{
 
 
 $('draftClientReport').onclick=async()=>{if(!state.selectedCandidate)return;
- try{info('analysisMsg','Preparando rascunho fundamentado das seções. É necessária revisão editorial.');
+ const campos=[$('clientTech'),$('clientBehavior'),$('clientRecommendation')];
+ if(campos.some(el=>el?.value.trim()) && !confirm('Gerar nova proposta de redação? Isso substituirá o texto atualmente nos campos, mas não altera o parecer salvo ou aprovado até você salvar novamente.'))return;
+ try{info('analysisMsg','Preparando proposta de redação fundamentada para revisão editorial.');
  const d=await call(`/api/admin/candidates/${state.selectedCandidate}/client-draft`,{method:'POST'});
  $('clientTech').value=(d.tecnicas||[]).join('\n\n');
  $('clientBehavior').value=(d.comportamentais||[]).join('\n\n');

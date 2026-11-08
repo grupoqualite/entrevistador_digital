@@ -73,9 +73,9 @@ def _client_text_for_criterion(c):
     name=_clean(c.get('criterion') or 'Requisito profissional')
     expl=_clean(c.get('auto_reason'))
     if not c.get('verified_excerpts'):
-        expl='A documentação e as respostas disponíveis ainda não oferecem elementos suficientes para uma conclusão fundamentada sobre esse requisito.'
+        expl='Até o momento, não há exemplos suficientemente específicos de atuação que permitam concluir o nível de domínio desse requisito.'
     elif not expl or re.search(r'aguardando|não (?:há|houve) nota|descartada|modelo não',expl,re.I):
-        expl='Foram identificadas informações relacionadas ao requisito, que devem ser examinadas à luz das atividades efetivamente exercidas.'
+        expl='Há relatos relacionados à atividade, cuja profundidade deve ser conferida a partir das responsabilidades assumidas e dos resultados descritos.'
     excerpts=[]
     for q in c.get('verified_excerpts',[])[:2]:
         excerpt=_clean(q.get('excerpt',''))
@@ -83,7 +83,7 @@ def _client_text_for_criterion(c):
             excerpt=excerpt.rstrip('.;')
             excerpts.append('“'+excerpt+'”')
     if excerpts:
-        expl+=' A avaliação considera o relato/documento: '+(' e '.join(excerpts))+'.'
+        expl+=' Como referência, consta o seguinte relato: '+(' e '.join(excerpts))+'.'
     if c.get('differential'):
         name+=' (diferencial)'
     return name, expl
@@ -183,7 +183,7 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
             para('O material DISC apresenta os seguintes valores informados: '+', '.join(vals)+'. A interpretação desses indicadores deve ser contextualizada com o instrumento utilizado e com os comportamentos efetivamente observados na entrevista.','small')
         elif disc.get('status') and disc.get('status')!='não fornecido':
             sub('Leitura complementar do DISC')
-            para('O material comportamental foi recebido, mas a extração disponível não permite descrever com segurança suas dimensões. A avaliação deve considerar o laudo original.','small')
+            para('Os indicadores comportamentais ainda precisam ser examinados quanto à escala e às dimensões do DISC. A interpretação deve ser confrontada com situações profissionais concretas.','small')
     points(payload.get('validacoes_comportamentais',[]) if 'validacoes_comportamentais' in payload else _points(soft,3))
 
     title('3. PARECER DE RECOMENDAÇÃO')
