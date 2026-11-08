@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.6.5-text-only';
+const versaoEsperada = '9.7.0-documental-review';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.6.5-text-only'){
-      indicador.textContent='V9.6.5 · Respostas por texto';
+    if(versao==='9.7.0-documental-review'){
+      indicador.textContent='V9.7.0 · Dossiês revisáveis';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.6.5. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.7.0. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
@@ -126,10 +126,22 @@ async function refreshTranscriptionStatus(cid){
    ?`${data.pending_audio} áudio(s) de entrevistas anteriores sem transcrição. Ouça e transcreva manualmente as respostas abaixo; novas entrevistas usam apenas texto.`
    :'Novas entrevistas usam apenas respostas digitadas. Nenhuma transcrição de áudio é necessária.';
 }
-async function selectCandidate(){const cid=$('reportCandidate').value;if(!cid)return;state.selectedCandidate=cid;const c=await call(`/api/admin/candidates/${cid}`);state.detail=c;state.report=c.report;refreshTranscriptionStatus(cid).catch(()=>{});const section=c.report?.client_sections||{};
+async function selectCandidate(){const cid=$('reportCandidate').value;if(!cid)return;state.selectedCandidate=cid;let c=await call(`/api/admin/candidates/${cid}`);
+ if(c.status==='concluido'&&(!c.report || (!c.report.client_edited_at && !c.report.client_approved_at && !(c.report.client_sections?.tecnicas?.length && c.report.client_sections?.comportamentais?.length && c.report.client_sections?.recomendacao)))){
+  try{info('analysisMsg','Preparando automaticamente a minuta com os documentos e respostas existentes.');
+      await call(`/api/admin/candidates/${cid}/prepare-dossier`,{method:'POST'});
+      c=await call(`/api/admin/candidates/${cid}`);
+      info('analysisMsg','Minuta disponível para edição. Revise as três seções e aprove o parecer antes de exportar.');
+  }catch(err){info('analysisMsg','Não foi possível preparar a minuta: '+err.message,true)}
+ }
+ state.detail=c;state.report=c.report;refreshTranscriptionStatus(cid).catch(()=>{});const section=c.report?.client_sections||{};
  $('clientTech').value=(section.tecnicas||[]).join('\n\n');
  $('clientBehavior').value=(section.comportamentais||[]).join('\n\n');
- $('clientRecommendation').value=section.recomendacao||c.report?.reviewer_comment||'';const evidence=[c.cv_text?'Currículo ✓':'Currículo ausente',c.disc_text?'DISC ✓':'DISC ausente',c.linkedin_text?'LinkedIn exportado ✓':'LinkedIn não extraído'];$('reportCandidateInfo').textContent=`${c.vacancy} · ${c.status} · ${evidence.join(' · ')}`;const area=$('answersArea');area.innerHTML='';for(const q of c.questions){const a=c.answers[q.id],box=document.createElement('section');box.className='answerrow';box.innerHTML=`<strong>${escapeHTML(q.id)} · ${escapeHTML(q.category_label)}</strong><p>${escapeHTML(q.question)}</p>${a?.mode==='audio'?`<audio controls src="/api/admin/candidates/${cid}/audio/${encodeURIComponent(q.id)}"></audio><label>Transcrição do áudio<textarea rows="3" data-transcript="${escapeHTML(q.id)}" placeholder="Registre a transcrição fiel para análise">${escapeHTML(a.transcript||'')}</textarea><button type="button" class="btn small outline" data-save-transcript="${escapeHTML(q.id)}">Salvar transcrição</button>`:`<p class="hint">${escapeHTML(a?.text||'Sem resposta')}</p>`}`;area.append(box)}area.querySelectorAll('[data-save-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.saveTranscript,text=area.querySelector(`[data-transcript="${qid}"]`).value;try{await call(`/api/admin/candidates/${cid}/transcripts/${qid}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});info('analysisMsg',`Transcrição ${qid} salva. Gere novamente o dossiê.`)}catch(e){info('analysisMsg',e.message,true)}});drawReport()}
+ $('clientRecommendation').value=section.recomendacao||c.report?.reviewer_comment||'';
+ if($('clientReportState'))$('clientReportState').textContent=c.report?.client_approved_at
+   ?`Parecer aprovado para envio em ${c.report.client_approved_at}. Qualquer alteração no texto exige nova aprovação.`
+   :c.report?'Minuta preparada. Confira as fontes, edite as três seções, salve e clique em Aprovar parecer.':'Aguardando preparação da minuta.';
+ const evidence=[c.cv_text?'Currículo ✓':'Currículo ausente',c.disc_text?'DISC ✓':'DISC ausente',c.linkedin_text?'LinkedIn exportado ✓':'LinkedIn não extraído'];$('reportCandidateInfo').textContent=`${c.vacancy} · ${c.status} · ${evidence.join(' · ')}`;const area=$('answersArea');area.innerHTML='';for(const q of c.questions){const a=c.answers[q.id],box=document.createElement('section');box.className='answerrow';box.innerHTML=`<strong>${escapeHTML(q.id)} · ${escapeHTML(q.category_label)}</strong><p>${escapeHTML(q.question)}</p>${a?.mode==='audio'?`<audio controls src="/api/admin/candidates/${cid}/audio/${encodeURIComponent(q.id)}"></audio><label>Transcrição do áudio<textarea rows="3" data-transcript="${escapeHTML(q.id)}" placeholder="Registre a transcrição fiel para análise">${escapeHTML(a.transcript||'')}</textarea><button type="button" class="btn small outline" data-save-transcript="${escapeHTML(q.id)}">Salvar transcrição</button>`:`<p class="hint">${escapeHTML(a?.text||'Sem resposta')}</p>`}`;area.append(box)}area.querySelectorAll('[data-save-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.saveTranscript,text=area.querySelector(`[data-transcript="${qid}"]`).value;try{await call(`/api/admin/candidates/${cid}/transcripts/${qid}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});info('analysisMsg',`Transcrição ${qid} salva. Gere novamente o dossiê.`)}catch(e){info('analysisMsg',e.message,true)}});drawReport()}
 $('analyze').onclick=async()=>{if(!state.selectedCandidate)return;try{
  info('analysisMsg','Organizando as respostas escritas e as evidências disponíveis.');
  $('analyze').disabled=true;
@@ -195,6 +207,12 @@ function drawReport(){
    }catch(err){info('analysisMsg',err.message,true)}
  };
 }
+$('previewPdf').onclick=async()=>{if(!state.selectedCandidate)return;
+ const url=`/api/admin/candidates/${state.selectedCandidate}/report-preview.pdf`;
+ try{const res=await fetch(url);if(!res.ok){let x;try{x=await res.json()}catch{}throw new Error(x?.detail||'Prévia indisponível')}
+  const b=await res.blob(),u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='minuta_parecer.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(u),3000);
+ }catch(e){info('analysisMsg',e.message,true)}
+};
 $('downloadPdf').onclick=async()=>{if(!state.selectedCandidate)return;const url=`/api/admin/candidates/${state.selectedCandidate}/report.pdf`;
  try{const res=await fetch(url);if(!res.ok){let x;try{x=await res.json()}catch{}throw new Error(x?.detail||'Parecer indisponível')};const blob=await res.blob();const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download='parecer_cliente.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(u),3000)}catch(e){info('analysisMsg',e.message,true)}};
 $('downloadInternalPdf').onclick=()=>{if(state.selectedCandidate)location.href=`/api/admin/candidates/${state.selectedCandidate}/report-interno.pdf`};
@@ -202,7 +220,15 @@ $('saveClientReport').onclick=async()=>{
  if(!state.selectedCandidate){info('analysisMsg','Selecione um candidato antes de salvar.',true);return}
  try{const data={tecnicas:$('clientTech').value,comportamentais:$('clientBehavior').value,recomendacao:$('clientRecommendation').value};
   await call(`/api/admin/candidates/${state.selectedCandidate}/client-report`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  info('analysisMsg','Parecer para o cliente salvo. Revise o PDF antes de enviar.');
+  info('analysisMsg','Texto salvo. Para emitir o documento final, confira a prévia e aprove o parecer.');
+  await selectCandidate();
+ }catch(err){info('analysisMsg',err.message,true)}
+};
+$('approveClientReport').onclick=async()=>{
+ if(!state.selectedCandidate)return info('analysisMsg','Selecione um candidato.',true);
+ if(!confirm('Você conferiu currículo, DISC, respostas, lacunas e as três seções? A aprovação autoriza a exportação para o cliente.'))return;
+ try{await call(`/api/admin/candidates/${state.selectedCandidate}/approve-client-report`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true})});
+     await selectCandidate();info('analysisMsg','Parecer aprovado. Agora você pode baixar o PDF para o cliente.');
  }catch(err){info('analysisMsg',err.message,true)}
 };
 $('downloadJson').onclick=()=>{if(state.selectedCandidate)location.href=`/api/admin/candidates/${state.selectedCandidate}/report.json`};
@@ -242,7 +268,8 @@ $('draftClientReport').onclick=async()=>{if(!state.selectedCandidate)return;
  const d=await call(`/api/admin/candidates/${state.selectedCandidate}/client-draft`,{method:'POST'});
  $('clientTech').value=(d.tecnicas||[]).join('\n\n');
  $('clientBehavior').value=(d.comportamentais||[]).join('\n\n');
- info('analysisMsg',`Minuta preenchida (${d.modo||'redação documental'}). Não é avaliação automática de domínio. Revise as evidências, escreva a recomendação e salve. ${d.aviso||''}`);
+ $('clientRecommendation').value=d.recomendacao||$('clientRecommendation').value;
+ info('analysisMsg',`Minuta preenchida (${d.modo||'redação documental'}). Revise as evidências e a recomendação, salve e aprove. ${d.aviso||''}`);
  }catch(e){info('analysisMsg',e.message,true)}
 };
 

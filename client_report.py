@@ -136,6 +136,8 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
             sub('Pontos para validação')
             for item in items[:6]:para('• '+str(item),'small')
     story.append(p('PARECER DE ENTREVISTA','heading'))
+    if report.get('client_preview'):
+        story.append(p('MINUTA PARA REVISÃO. NÃO ENVIAR AO CLIENTE.','sub'))
     candidate=_clean(report.get('candidate') or 'Não informado')
     role=_clean(report.get('job_title') or 'Não informado')
     metadata=[[p('Candidato: '+candidate,'metadata')],[p('Vaga: '+role,'metadata')]]
@@ -164,8 +166,6 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
         if not tech:para('Não há critérios técnicos avaliáveis registrados para esta vaga. É necessária revisão da descrição da oportunidade.')
     points(payload.get('validacoes_tecnicas',[]) if 'validacoes_tecnicas' in payload else _points(tech))
 
-    if payload.get('tecnicas') and sum(len(x) for x in payload['tecnicas'])>1600:
-        story.append(PageBreak())
     title('2. COMPETÊNCIAS COMPORTAMENTAIS')
     if payload.get('comportamentais'):
         for text in payload['comportamentais']:para(text)
@@ -219,7 +219,7 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
         canvas.setStrokeColor(RULE);canvas.setLineWidth(.55)
         canvas.line(L,1.45*cm,A4[0]-R,1.45*cm)
         canvas.setFont(FONT_NAME,7.4);canvas.setFillColor(SUB)
-        canvas.drawString(L,1.08*cm,'Parecer de entrevista  |  Uso profissional reservado ao cliente')
+        canvas.drawString(L,1.08*cm,'Minuta não aprovada | Revisão pendente' if report.get('client_preview') else 'Parecer de entrevista | Uso profissional reservado ao cliente')
         canvas.drawRightString(A4[0]-R,1.08*cm,f'{doc.page}')
         canvas.restoreState()
     doc.addPageTemplates([PageTemplate(id='client',frames=frame,onPage=decorate)])

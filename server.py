@@ -62,7 +62,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.6.5',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.7.0',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -206,6 +206,71 @@ def get_answers(cid:str):
     with conn() as db:
         return {r['question_id']:dict(r) for r in db.execute('SELECT * FROM answers WHERE candidate_id=?',(cid,)).fetchall()}
 
+def prepare_documental_dossier(cid:str,overwrite:bool=False):
+    """Prepara imediatamente a minuta auditável, inclusive sem modelo local.
+
+    Não atribui score. Não altera parecer já revisado/aprovado sem pedido explícito.
+    """
+    with conn() as db:
+        row=db.execute('SELECT * FROM candidates WHERE id=?',(cid,)).fetchone()
+        previous=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+    if not row:raise ValueError('Candidato não encontrado.')
+    if previous:
+        old=json.loads(previous['report_json'])
+        if old.get('client_approved_at') or old.get('client_edited_at'):
+            raise ValueError('O parecer já foi editado ou aprovado. Não é possível sobrescrever o texto validado automaticamente.')
+        parts=old.get('client_sections') or {}
+        if all(parts.get(x) for x in ('tecnicas','comportamentais','recomendacao')) and not overwrite:
+            return old
+        if old.get('review_history'):
+            # Recuperação de backups de versões anteriores: conservar integralmente as notas
+            # e a revisão humana, preenchendo apenas as seções externas que faltavam.
+            provisional=draft_from_sources(old,row['cv_text'],row['linkedin_text'],row['disc_text'])
+            old['client_sections']={
+                'tecnicas':provisional['tecnicas'], 'comportamentais':provisional['comportamentais'],
+                'recomendacao':provisional['recomendacao'],
+                'validacoes_tecnicas':provisional['validacoes_tecnicas'],
+                'validacoes_comportamentais':provisional['validacoes_comportamentais']}
+            old['client_approved_at']=None
+            old['client_approved_by']=None
+            with conn() as db:
+                db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',
+                           (json.dumps(old,ensure_ascii=False),now(),cid))
+            return old
+    c=dict(row);v=get_vacancy(c['vacancy_id']);questions=json.loads(v['questions_json'])
+    answers=get_answers(cid)
+    report=prepare_report(questions,answers,c['cv_text'],c['disc_text'],c['linkedin_text'],c['linkedin_url'],v['title'],c['name'],v['description'])
+    missing_audio=sum(1 for x in answers.values() if x.get('audio_file') and not x.get('transcript','').strip())
+    if missing_audio:report['pendencias'].append(f'{missing_audio} gravação(ões) histórica(s) sem transcrição; nenhum conteúdo dessas gravações foi avaliado.')
+    provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+    report['client_sections']={
+        'tecnicas':provisional['tecnicas'],
+        'comportamentais':provisional['comportamentais'],
+        'recomendacao':provisional['recomendacao'],
+        'validacoes_tecnicas':provisional['validacoes_tecnicas'],
+        'validacoes_comportamentais':provisional['validacoes_comportamentais'],
+    }
+    report['analysis_mode']='Minuta documental sem notas automáticas, sujeita à análise técnica e à aprovação do recrutador.'
+    report['draft_mode']=provisional['modo']
+    report['draft_pending']={'tecnicas':provisional['validacoes_tecnicas'],'comportamentais':provisional['validacoes_comportamentais']}
+    report['client_approved_at']=None
+    report['client_approved_by']=None
+    report['generated_at']=now()
+    with conn() as db:
+        db.execute('INSERT INTO reports(candidate_id,report_json,generated) VALUES(?,?,?) ON CONFLICT(candidate_id) DO UPDATE SET report_json=excluded.report_json,generated=excluded.generated',
+                   (cid,json.dumps(report,ensure_ascii=False),now()))
+    return report
+
+
+@APP.post('/api/admin/candidates/{cid}/prepare-dossier')
+def prepare_dossier_now(request:Request,cid:str):
+    must_admin(request)
+    try:report=prepare_documental_dossier(cid,overwrite=True)
+    except ValueError as err:raise HTTPException(422,str(err))
+    return {'ok':True,'message':'Minuta preparada. Revise as três seções, salve e aprove antes de exportar.',
+            'client_sections':report['client_sections'],'review_status':report.get('review_status')}
+
+
 async def save_file(file:UploadFile|None,subdir:str)->tuple[str,str,dict]:
     if not file or not file.filename:return '','',{}
     content=await file.read(MAX_UPLOAD+1)
@@ -219,7 +284,7 @@ async def save_file(file:UploadFile|None,subdir:str)->tuple[str,str,dict]:
     return stored,ex['text'],ex
 
 @APP.get('/',response_class=HTMLResponse)
-async def home():return FileResponse(BASE/'static/index.html')
+async def home():return FileResponse(BASE/'static/index.html',headers={'Cache-Control':'no-store, max-age=0'})
 @APP.get('/entrevista/{token}',response_class=HTMLResponse)
 async def interview_screen(token:str):
     get_candidate(token)
@@ -279,7 +344,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.6.5-text-only','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.0-documental-review','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -543,7 +608,7 @@ async def update_candidate_materials(request:Request,cid:str,
         old=db.execute('SELECT * FROM candidates WHERE id=?',(cid,)).fetchone()
         if not old:raise HTTPException(404,'Candidato não encontrado.')
         prev=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
-        if prev and json.loads(prev['report_json']).get('reviewed_count',0):
+        if prev and (json.loads(prev['report_json']).get('reviewed_count',0) or json.loads(prev['report_json']).get('client_approved_at')):
             raise HTTPException(409,'Há revisão humana registrada. Não substitua fontes sem preservar um novo ciclo de avaliação.')
     if not any(x and x.filename for x in (cv,disc,linkedin_pdf,disc_comparativo)):
         raise HTTPException(422,'Selecione ao menos um documento.')
@@ -611,9 +676,17 @@ def complete(token:str):
     missing=[x['id'] for x in q if x['id'] not in a or not (a[x['id']]['text'] or a[x['id']]['audio_file'])]
     if missing:raise HTTPException(422,'Há perguntas sem resposta: '+', '.join(missing))
     with conn() as db:db.execute('UPDATE candidates SET status=? WHERE id=?',('concluido',c['id']))
-    # Sem enfileiramento automático de áudio ao concluir novas entrevistas.
-    # Arquivos históricos existentes permanecem intactos.
-    return {'ok':True,'transcription':'disabled_for_new_answers','message':'Entrevista concluída. Obrigado por participar.'}
+    # Preparação documental leve e imediata, sem depender de Ollama/Whisper.
+    # Não impede conclusão se faltar material ou ocorrer um erro pontual de extração.
+    dossier_status='pendente'
+    try:
+        prepare_documental_dossier(c['id'],overwrite=True)
+        dossier_status='minuta_disponivel_para_revisao'
+    except ValueError:
+        dossier_status='fontes_insuficientes_ou_parecer_existente'
+    except Exception:
+        dossier_status='pendente_reprocessamento_administrativo'
+    return {'ok':True,'transcription':'disabled_for_new_answers','dossier_status':dossier_status,'message':'Entrevista concluída. Obrigado por participar.'}
 
 @APP.post('/api/admin/candidates/{cid}/transcripts/{qid}')
 async def add_transcript(request:Request,cid:str,qid:str):
@@ -734,7 +807,7 @@ def _do_analysis(cid:str,model:str,auto_transcribe:bool,job_id:str):
         # Pode ser revisada mesmo no plano Render gratuito sem Ollama.
         try:
             provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
-            report['client_sections']={'tecnicas':provisional['tecnicas'],'comportamentais':provisional['comportamentais'],'recomendacao':''}
+            report['client_sections']={'tecnicas':provisional['tecnicas'],'comportamentais':provisional['comportamentais'],'recomendacao':provisional['recomendacao'],'validacoes_tecnicas':provisional['validacoes_tecnicas'],'validacoes_comportamentais':provisional['validacoes_comportamentais']}
             report['draft_mode']=provisional['modo']
             report['draft_pending']={'tecnicas':provisional['validacoes_tecnicas'],'comportamentais':provisional['validacoes_comportamentais']}
         except ValueError as err:
@@ -767,11 +840,23 @@ async def run_analysis(request:Request,cid:str,ollama_model:str=Form(''),auto_tr
                    (job_id,cid,'queued',0,0,'',now(),now()))
     with conn() as db:
         pend=db.execute("SELECT COUNT(*) FROM answers WHERE candidate_id=? AND audio_file!='' AND (transcript IS NULL OR transcript='')",(cid,)).fetchone()[0]
-    if pend:
-        # Revert an unused analysis job; transcription has its own queue.
-        with conn() as db:db.execute('DELETE FROM analysis_jobs WHERE id=?',(job_id,))
-        raise HTTPException(409,'Há áudio sem transcrição. Aguarde o processamento automático ou clique em Reprocessar transcrição.')
     model=(ollama_model.strip() or os.environ.get('ENTREVISTADOR_OLLAMA_MODEL','')).strip()[:100]
+    if not model:
+        # Sem modelo configurado, gera um documento com evidências reais imediatamente.
+        # Áudios antigos não transcritos são marcados como pendência, sem travar respostas escritas.
+        try:
+            report=prepare_documental_dossier(cid,overwrite=True)
+            with conn() as db:
+                db.execute("UPDATE analysis_jobs SET status='finished',progress=?,total=?,updated_at=? WHERE id=?",
+                           (len(report['criteria']),len(report['criteria']),now(),job_id))
+        except Exception as err:
+            with conn() as db:
+                db.execute('DELETE FROM analysis_jobs WHERE id=?',(job_id,))
+            raise HTTPException(422,str(err))
+        return {'job_id':job_id,'status':'finished','message':'Minuta documental preparada para revisão humana.'}
+    if pend and auto_transcribe:
+        with conn() as db:db.execute('DELETE FROM analysis_jobs WHERE id=?',(job_id,))
+        raise HTTPException(409,'Há gravações históricas sem transcrição. Registre as transcrições manualmente ou desative o processamento de áudio.')
     POOL.submit(_do_analysis,cid,model,auto_transcribe,job_id)
     return {'job_id':job_id,'status':'queued','message':'Análise registrada; acompanhe o andamento.'}
 
@@ -942,7 +1027,11 @@ async def generate_client_draft(request:Request,cid:str):
     with conn() as db:
         c=db.execute('SELECT * FROM candidates WHERE id=?',(cid,)).fetchone()
         r=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
-    if not c or not r:raise HTTPException(404,'Gere primeiro a análise.')
+    if not c:raise HTTPException(404,'Candidato não encontrado.')
+    if not r:
+        try:report=prepare_documental_dossier(cid)
+        except ValueError as err:raise HTTPException(422,str(err))
+        with conn() as db:r=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
     report=json.loads(r['report_json'])
     model=os.environ.get('ENTREVISTADOR_OLLAMA_MODEL','').strip()
     if model and report.get('reviewed_count',0)>0:
@@ -974,10 +1063,50 @@ async def save_client_report(request:Request,cid:str):
         row=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
         if not row:raise HTTPException(404,'Gere a análise antes de preparar o parecer do cliente.')
         report=json.loads(row['report_json'])
-        report['client_sections']={'tecnicas':tech,'comportamentais':behavioral,'recomendacao':reco.strip()}
+        previous=report.get('client_sections') or {}
+        report['client_sections']={'tecnicas':tech,'comportamentais':behavioral,'recomendacao':reco.strip(),
+          'validacoes_tecnicas':previous.get('validacoes_tecnicas') or [],
+          'validacoes_comportamentais':previous.get('validacoes_comportamentais') or []}
         report['client_edited_at']=now()
+        report['client_approved_at']=None
+        report['client_approved_by']=None
         db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',(json.dumps(report,ensure_ascii=False),now(),cid))
     return {'ok':True,'client_sections':report['client_sections']}
+
+@APP.post('/api/admin/candidates/{cid}/approve-client-report')
+async def approve_client_report(request:Request,cid:str):
+    actor=must_admin(request)
+    data=await request.json()
+    if data.get('confirmed') is not True:
+        raise HTTPException(422,'Confirme expressamente a revisão das fontes e das três seções.')
+    with conn() as db:
+        c=db.execute('SELECT status FROM candidates WHERE id=?',(cid,)).fetchone()
+        row=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+        if not c or not row:raise HTTPException(404,'Candidato ou minuta não encontrados.')
+        if c['status']!='concluido':raise HTTPException(409,'O candidato ainda não concluiu a entrevista.')
+        report=json.loads(row['report_json']);sections=report.get('client_sections') or {}
+        if not sections.get('tecnicas') or not sections.get('comportamentais') or not str(sections.get('recomendacao') or '').strip():
+            raise HTTPException(422,'Preencha e salve as três seções antes de aprovar.')
+        if not report.get('client_edited_at'):
+            raise HTTPException(409,'Revise e salve o texto do parecer antes de aprovar para o cliente.')
+        report['client_approved_at']=now()
+        report['client_approved_by']=actor['id']
+        db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',
+                   (json.dumps(report,ensure_ascii=False),now(),cid))
+    with conn() as db:record_audit(db,actor,'approve_client_report',cid)
+    return {'ok':True,'approved_at':report['client_approved_at']}
+
+
+@APP.get('/api/admin/candidates/{cid}/report-preview.pdf')
+def preview_client_pdf(request:Request,cid:str):
+    must_admin(request)
+    with conn() as db:
+        row=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+    if not row:raise HTTPException(404,'Prepare primeiro o dossiê.')
+    report=json.loads(row['report_json']);report['client_preview']=True
+    return Response(render_client_pdf(report),media_type='application/pdf',
+                    headers={'Content-Disposition':f'attachment; filename="minuta_cliente_{cid}.pdf"'})
+
 
 @APP.get('/api/admin/candidates/{cid}/report.pdf')
 def download_pdf(request:Request,cid:str):
@@ -991,8 +1120,8 @@ def download_pdf(request:Request,cid:str):
         raise HTTPException(409,'Registre e salve o parecer de recomendação do recrutador antes de exportar.')
     if not sections.get('tecnicas') or not sections.get('comportamentais'):
         raise HTTPException(409,'Revise e salve as seções técnica e comportamental antes de exportar.')
-    if report.get('reviewed_count',0)<report.get('reviewable_count',0):
-        raise HTTPException(409,'Conclua a revisão de todos os critérios, inclusive registrando sem nota onde necessário.')
+    if not report.get('client_approved_at'):
+        raise HTTPException(409,'O parecer ainda não foi aprovado pelo recrutador. Confira a minuta e clique em Aprovar parecer para o cliente.')
     content=render_client_pdf(report)
     return Response(content,media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="parecer_cliente_{cid}.pdf"'})
 
