@@ -1,4 +1,4 @@
-"""Entrevistador Digital V7: matriz técnica por evidências, áudio e homologação humana."""
+"""Entrevistador Digital: entrevistas por texto, evidências e revisão humana."""
 from __future__ import annotations
 import os, json, sqlite3, secrets, hashlib, time, re, io, html, zipfile, tempfile, shutil, threading, stat
 from pathlib import Path, PurePosixPath
@@ -62,7 +62,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.6.3',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.6.5',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -279,7 +279,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.6.4-admin-backup-passwords','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.6.5-text-only','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -588,21 +588,19 @@ async def save_answer(token:str,question_id:str=Form(...),text:str=Form(''),audi
     if c['status']=='concluido':raise HTTPException(403,'Entrevista já concluída.')
     v=get_vacancy(c['vacancy_id']);q=json.loads(v['questions_json'])
     if question_id not in {x['id'] for x in q}:raise HTTPException(422,'Pergunta desconhecida.')
-    if bool(text.strip())==bool(audio and audio.filename):raise HTTPException(422,'Envie texto OU áudio.')
-    saved='';mode='text';transcript=''
+    # Desde V9.6.5, novas respostas são exclusivamente digitadas.
+    # Não eliminar a tabela/coluna audio_file: gravações históricas e backups
+    # permanecem disponíveis para consulta e transcrição manual pelo recrutador.
     if audio and audio.filename:
-        content=await audio.read(12*1024*1024+1)
-        if not content or len(content)>12*1024*1024:raise HTTPException(413,'Áudio vazio ou acima de 12 MB.')
-        kind=(audio.content_type or '').lower()
-        if not any(t in kind for t in ('audio/webm','audio/mp4','audio/ogg','audio/mpeg','audio/wav','audio/x-m4a','application/octet-stream')):raise HTTPException(415,'Formato de áudio não suportado.')
-        ext=('.mp4' if 'mp4' in kind else '.ogg' if 'ogg' in kind else '.wav' if 'wav' in kind else '.webm')
-        directory=UPLOADS/'audios'/c['id'];directory.mkdir(parents=True,exist_ok=True)
-        saved=f'audios/{c["id"]}/{question_id}_{secrets.token_hex(6)}{ext}'
-        (UPLOADS/saved).write_bytes(content);mode='audio'
-    else:
-        if len(text.strip())<3:raise HTTPException(422,'Digite uma resposta.')
-        text=text.strip()[:10000]
+        raise HTTPException(422,'O envio de áudio está desativado. Digite sua resposta.')
+    if len(text.strip())<3:
+        raise HTTPException(422,'Digite uma resposta com pelo menos 3 caracteres.')
+    text=text.strip()[:10000]
+    saved='';mode='text';transcript=''
     with conn() as db:
+        previous=db.execute('SELECT audio_file FROM answers WHERE candidate_id=? AND question_id=?',(c['id'],question_id)).fetchone()
+        if previous and previous['audio_file']:
+            raise HTTPException(409,'Esta pergunta possui uma gravação anterior preservada. O recrutador pode registrar a transcrição manual no painel.')
         db.execute('INSERT INTO answers(candidate_id,question_id,mode,text,transcript,audio_file,updated) VALUES(?,?,?,?,?,?,?) ON CONFLICT(candidate_id,question_id) DO UPDATE SET mode=excluded.mode,text=excluded.text,transcript=excluded.transcript,audio_file=excluded.audio_file,updated=excluded.updated',(c['id'],question_id,mode,text,transcript,saved,now()))
         db.execute('UPDATE candidates SET status=? WHERE id=?',('em_andamento',c['id']))
     return {'ok':True,'mode':mode}
@@ -613,8 +611,9 @@ def complete(token:str):
     missing=[x['id'] for x in q if x['id'] not in a or not (a[x['id']]['text'] or a[x['id']]['audio_file'])]
     if missing:raise HTTPException(422,'Há perguntas sem resposta: '+', '.join(missing))
     with conn() as db:db.execute('UPDATE candidates SET status=? WHERE id=?',('concluido',c['id']))
-    job_id=queue_transcription(c['id'])
-    return {'ok':True,'transcription':'queued' if job_id else 'not_required','message':'Entrevista concluída. Obrigado por participar.'}
+    # Sem enfileiramento automático de áudio ao concluir novas entrevistas.
+    # Arquivos históricos existentes permanecem intactos.
+    return {'ok':True,'transcription':'disabled_for_new_answers','message':'Entrevista concluída. Obrigado por participar.'}
 
 @APP.post('/api/admin/candidates/{cid}/transcripts/{qid}')
 async def add_transcript(request:Request,cid:str,qid:str):
@@ -626,24 +625,15 @@ async def add_transcript(request:Request,cid:str,qid:str):
         db.execute('UPDATE answers SET transcript=?,updated=? WHERE candidate_id=? AND question_id=?',(text,now(),cid,qid))
     return {'ok':True}
 
-@APP.post('/api/admin/candidates/{cid}/transcribe/{qid}',status_code=202)
+@APP.post('/api/admin/candidates/{cid}/transcribe/{qid}',status_code=410)
 def auto_transcribe(request:Request,cid:str,qid:str):
-    """Enfileira uma transcrição. A resposta HTTP nunca espera o modelo terminar."""
     must_admin(request)
-    with conn() as db:
-        row=db.execute('SELECT audio_file FROM answers WHERE candidate_id=? AND question_id=?',(cid,qid)).fetchone()
-    if not row or not row['audio_file']:raise HTTPException(404,'Áudio da pergunta não encontrado.')
-    job=queue_transcription(cid,force=True)
-    return {'status':'queued' if job else 'already_running_or_finished','job_id':job}
+    raise HTTPException(410,'A transcrição automática está desativada. Registre manualmente o texto de gravações históricas no painel.')
 
-@APP.post('/api/admin/candidates/{cid}/transcribe-all',status_code=202)
+@APP.post('/api/admin/candidates/{cid}/transcribe-all',status_code=410)
 def transcribe_all(request:Request,cid:str):
     must_admin(request)
-    with conn() as db:
-        if not db.execute('SELECT 1 FROM candidates WHERE id=?',(cid,)).fetchone():
-            raise HTTPException(404,'Candidato não encontrado.')
-    job=queue_transcription(cid,force=True)
-    return {'status':'queued' if job else 'no_pending_audio','job_id':job}
+    raise HTTPException(410,'A transcrição automática está desativada. Gravações históricas permanecem disponíveis para transcrição manual.')
 
 @APP.get('/api/admin/candidates/{cid}/transcription-status')
 def transcription_status(request:Request,cid:str):

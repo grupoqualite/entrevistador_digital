@@ -1,13 +1,77 @@
-const $=id=>document.getElementById(id);window.addEventListener('DOMContentLoaded',()=>{const img=document.getElementById('candidateLogo');img.onload=()=>{img.style.display='block';document.getElementById('fallbackBrand').style.display='none'};img.onerror=()=>{img.style.display='none'};});const token=decodeURIComponent(location.pathname.split('/').pop());let data=null,idx=0,mode='text',recorder=null,chunks=[],audioBlob=null,recordUrl=null;
-const showErr=msg=>$('interviewMsg').textContent=msg||'';
-async function send(url,options={}){const r=await fetch(url,options);let d;try{d=await r.json()}catch{d={detail:'Falha de comunicação.'}}if(!r.ok)throw new Error(d.detail||`Erro ${r.status}`);return d;}
-async function init(){try{data=await send(`/api/invites/${token}`);$('greeting').textContent=`Olá, ${data.candidate}!`;$('vacancyName').textContent=`Entrevista para a vaga de ${data.vacancy}`;if(data.status==='concluido'){done();return}showQuestion()}catch(e){$('questionBox').textContent='Convite indisponível: '+e.message;$('next').disabled=true}}
-function changeMode(m){mode=m;$('textMode').classList.toggle('selected',m==='text');$('audioMode').classList.toggle('selected',m==='audio');$('textAreaBox').classList.toggle('hidden',m!=='text');$('audioAreaBox').classList.toggle('hidden',m!=='audio');showErr('')}
-$('textMode').onclick=()=>changeMode('text');$('audioMode').onclick=()=>changeMode('audio');
-function showQuestion(){if(!data||idx>=data.questions.length)return;const q=data.questions[idx];$('questionBox').textContent=q.question;$('stepText').textContent=`Pergunta ${idx+1} de ${data.questions.length} · ${q.category_label}`;$('stepPercent').textContent=`${Math.round(idx/data.questions.length*100)}%`;$('progressFill').style.width=`${Math.round(idx/data.questions.length*100)}%`;$('next').textContent=idx===data.questions.length-1?'Concluir entrevista':'Salvar e continuar';$('prev').disabled=idx===0;$('answerText').value='';audioBlob=null;chunks=[];if(recordUrl){URL.revokeObjectURL(recordUrl);recordUrl=null}$('audioPreview').classList.add('hidden');$('audioPreview').removeAttribute('src');$('micStatus').textContent=data.answered[q.id]?'Esta pergunta já foi respondida. Envie outra resposta somente se desejar substituí-la.':'Toque em Gravar áudio para iniciar.';changeMode('text');showErr('')}
-function done(){$('interviewBody').classList.add('hidden');$('finished').classList.remove('hidden');$('greeting').textContent='Entrevista finalizada';$('vacancyName').textContent=''}
+// V9.6.5: entrevistas novas exclusivamente por texto.
+const $ = id => document.getElementById(id);
+const token=decodeURIComponent(location.pathname.split('/').pop());
+let data=null,idx=0;
+const showErr=message=>{ $('interviewMsg').textContent=message||''; };
+window.addEventListener('DOMContentLoaded',()=>{
+  const logo=$('candidateLogo');
+  logo.onload=()=>{logo.style.display='block';$('fallbackBrand').style.display='none'};
+  logo.onerror=()=>{logo.style.display='none'};
+});
+async function send(url,options={}){
+  const r=await fetch(url,options);let body;
+  try{body=await r.json()}catch{body={detail:'Falha de comunicação.'}}
+  if(!r.ok)throw new Error(body.detail||`Erro ${r.status}`);
+  return body;
+}
+function done(){
+  $('interviewBody').classList.add('hidden');
+  $('finished').classList.remove('hidden');
+  $('greeting').textContent='Entrevista finalizada';
+  $('vacancyName').textContent='';
+}
+function showQuestion(){
+  if(!data||idx>=data.questions.length)return;
+  const q=data.questions[idx];
+  $('questionBox').textContent=q.question;
+  $('stepText').textContent=`Pergunta ${idx+1} de ${data.questions.length} · ${q.category_label}`;
+  const progress=Math.round(idx/data.questions.length*100);
+  $('stepPercent').textContent=`${progress}%`;
+  $('progressFill').style.width=`${progress}%`;
+  $('next').textContent=idx===data.questions.length-1?'Concluir entrevista':'Salvar e continuar';
+  $('prev').disabled=idx===0;
+  $('answerText').value='';
+  showErr(data.answered[q.id]?'Esta pergunta já foi respondida. Você pode continuar sem substituir a resposta ou digitar outra resposta.':'');
+}
+async function init(){
+  try{
+    data=await send(`/api/invites/${token}`);
+    $('greeting').textContent=`Olá, ${data.candidate}!`;
+    $('vacancyName').textContent=`Entrevista para a vaga de ${data.vacancy}`;
+    if(data.status==='concluido'){done();return}
+    showQuestion();
+  }catch(error){
+    $('questionBox').textContent='Convite indisponível: '+error.message;
+    $('next').disabled=true;
+  }
+}
 $('prev').onclick=()=>{if(idx>0){idx--;showQuestion()}};
-$('next').onclick=async()=>{const q=data.questions[idx];const fd=new FormData();fd.append('question_id',q.id);if(mode==='text'){const text=$('answerText').value.trim();if(!text&&!data.answered[q.id])return showErr('Digite sua resposta antes de continuar.');if(text)fd.append('text',text);else {if(idx===data.questions.length-1){await send(`/api/invites/${token}/complete`,{method:'POST'});return done()}idx++;return showQuestion()}}else{if(!audioBlob&&!data.answered[q.id])return showErr('Grave um áudio antes de continuar.');if(audioBlob)fd.append('audio',audioBlob,'resposta.webm');else{if(idx===data.questions.length-1){await send(`/api/invites/${token}/complete`,{method:'POST'});return done()}idx++;return showQuestion()}}$('next').disabled=true;showErr('Salvando resposta...');try{await send(`/api/invites/${token}/answer`,{method:'POST',body:fd});data.answered[q.id]=true;if(idx===data.questions.length-1){await send(`/api/invites/${token}/complete`,{method:'POST'});done()}else{idx++;showQuestion()}}catch(e){showErr(e.message)}finally{$('next').disabled=false}};
-$('answerText').addEventListener('paste',e=>{e.preventDefault();showErr('A função colar está desabilitada. Digite a resposta ou grave um áudio.')});$('answerText').addEventListener('drop',e=>{e.preventDefault();showErr('Não é permitido arrastar texto para este campo.')});$('answerText').addEventListener('beforeinput',e=>{if(['insertFromPaste','insertFromDrop'].includes(e.inputType)){e.preventDefault();showErr('A colagem está desabilitada.')}});$('answerText').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='v'){e.preventDefault();showErr('A função colar está desabilitada.')}});
-$('startRec').onclick=async()=>{showErr('');if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined')return showErr('Este navegador não permite gravação de áudio neste endereço. Use HTTPS ou escolha texto.');try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];const mime=['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/ogg'].find(x=>MediaRecorder.isTypeSupported(x));recorder=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);recorder.ondataavailable=e=>{if(e.data?.size)chunks.push(e.data)};recorder.onstop=()=>{audioBlob=new Blob(chunks,{type:recorder.mimeType||'audio/webm'});stream.getTracks().forEach(t=>t.stop());recordUrl=URL.createObjectURL(audioBlob);$('audioPreview').src=recordUrl;$('audioPreview').classList.remove('hidden');$('startRec').disabled=false;$('stopRec').disabled=true;$('micStatus').textContent='Áudio gravado. Ouça antes de enviar. Para regravar, clique novamente em Gravar áudio.'};recorder.start();$('startRec').disabled=true;$('stopRec').disabled=false;$('micStatus').textContent='Gravando... Clique em Parar para concluir.'}catch(e){showErr('Não foi possível acessar o microfone: '+e.message)}};
-$('stopRec').onclick=()=>{if(recorder?.state==='recording')recorder.stop()};init();
+$('next').onclick=async()=>{
+  if(!data||!data.questions[idx])return;
+  const q=data.questions[idx];
+  const answer=$('answerText').value.trim();
+  const previouslyAnswered=Boolean(data.answered[q.id]);
+  if(!answer&&!previouslyAnswered)return showErr('Digite sua resposta antes de continuar.');
+  if(answer.length>0&&answer.length<3)return showErr('Digite uma resposta com pelo menos 3 caracteres.');
+  $('next').disabled=true;showErr('Salvando resposta...');
+  try{
+    if(answer){
+      const fd=new FormData();
+      fd.append('question_id',q.id);
+      fd.append('text',answer);
+      await send(`/api/invites/${token}/answer`,{method:'POST',body:fd});
+      data.answered[q.id]=true;
+    }
+    if(idx===data.questions.length-1){
+      await send(`/api/invites/${token}/complete`,{method:'POST'});done();
+    }else{idx++;showQuestion()}
+  }catch(error){showErr(error.message)}
+  finally{$('next').disabled=false}
+};
+const textArea=$('answerText');
+textArea.addEventListener('paste',e=>{e.preventDefault();showErr('A função colar está desabilitada. Digite sua resposta.')});
+textArea.addEventListener('drop',e=>{e.preventDefault();showErr('Não é permitido arrastar texto para este campo.')});
+textArea.addEventListener('beforeinput',e=>{if(['insertFromPaste','insertFromDrop'].includes(e.inputType)){e.preventDefault();showErr('A colagem está desabilitada.')}});
+textArea.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='v'){e.preventDefault();showErr('A função colar está desabilitada.')}});
+textArea.addEventListener('contextmenu',e=>e.preventDefault());
+init();

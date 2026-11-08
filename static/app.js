@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.6.4-admin-backup-passwords';
+const versaoEsperada = '9.6.5-text-only';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.6.4-admin-backup-passwords'){
-      indicador.textContent='V9.6.4 · Usuários e backup';
+    if(versao==='9.6.5-text-only'){
+      indicador.textContent='V9.6.5 · Respostas por texto';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.6.4. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.6.5. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
@@ -82,7 +82,7 @@ async function loadQuestions(){if(!state.selectedVacancy)return;const v=await ca
 function drawQuestions(){const el=$('questions');el.innerHTML='';$('qCounter').textContent=`${state.editing.length} perguntas`;state.editing.forEach((q,index)=>{const box=document.createElement('article');box.className='questioncard';box.innerHTML=`<div class="meta"><span class="category">${escapeHTML(q.category_label||q.category)}</span><button class="btn small outline" data-remove="${index}" type="button">Remover</button></div><textarea rows="3" data-edit="${index}" aria-label="Pergunta ${index+1}">${escapeHTML(q.question)}</textarea><div class="origin"><strong>Foco da pergunta:</strong> ${escapeHTML(q.focus||q.category_label||'Competência da vaga')}<br><strong>O que verificar:</strong> ${escapeHTML(q.expected_evidence||'Experiência prática e resultados verificáveis')}<br><strong>Trecho da vaga:</strong> ${escapeHTML(q.origin||'Inserida manualmente')}<br><strong>Critério:</strong> ${escapeHTML(q.criterion||'')}</div><div class="smallrow"><span class="hint">Peso (1 a 5):</span><select data-weight="${index}">${[1,2,3,4,5].map(w=>`<option ${Number(q.weight)===w?'selected':''} value="${w}">${w}</option>`).join('')}</select><label class="hint" style="margin:0"><input data-diff="${index}" type="checkbox" style="width:auto;display:inline;margin:0" ${q.differential?'checked':''}> Diferencial</label></div>`;el.append(box)});el.querySelectorAll('[data-edit]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.edit)].question=x.value);el.querySelectorAll('[data-weight]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.weight)].weight=Number(x.value));el.querySelectorAll('[data-diff]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.diff)].differential=x.checked);el.querySelectorAll('[data-remove]').forEach(x=>x.onclick=()=>{state.editing.splice(Number(x.dataset.remove),1);drawQuestions()})}
 $('addQuestion').onclick=()=>{state.editing.push({question:'',category:'hard',category_label:'Hard skills',criterion:'Novo critério, inserir origem e competência.',origin:'Pergunta inserida manualmente pelo recrutador',weight:2,differential:false});drawQuestions();$('questions').scrollTop=$('questions').scrollHeight};
 $('saveQuestions').onclick=async()=>{try{state.editing.forEach((q,i)=>{const field=document.querySelector(`[data-edit="${i}"]`);if(field)q.question=field.value});const res=await call(`/api/admin/vacancies/${state.selectedVacancy}/questions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({questions:state.editing})});state.editing=res.questions;drawQuestions();info('qMsg','Questionário salvo e pronto para ser usado com os candidatos.')}catch(err){info('qMsg',err.message,true)}};
-$('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. No celular, publique em HTTPS antes de testar áudio.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
+$('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. Respostas exclusivamente digitadas, com bloqueio de colagem.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
 function drawCandidateList(){const el=$('candidateCards');el.innerHTML=state.candidates.length?'':'<p class="hint">Ainda não há candidatos.</p>';for(const c of state.candidates){const box=document.createElement('article');box.className='card';box.innerHTML=`<h3>${escapeHTML(c.name)}</h3><p>${escapeHTML(c.vacancy)}</p><p><span class="category">${escapeHTML(c.status)}</span></p><button type="button" class="btn small outline" data-open-candidate="${escapeHTML(c.id)}">Analisar entrevista</button>`;el.append(box)}el.querySelectorAll('[data-open-candidate]').forEach(x=>x.onclick=async()=>{showTab('reports');$('reportCandidate').value=x.dataset.openCandidate;await selectCandidate()})}
 $('reportCandidate').onchange=selectCandidate;
 $('materialsForm').onsubmit=async e=>{
@@ -118,42 +118,22 @@ $('materialsForm').onsubmit=async e=>{
   info('materialsMsg','Não foi possível confirmar o envio: '+err.message+'. Confira o status do candidato antes de tentar novamente.',true);
  }finally{if(sendButton)sendButton.disabled=false;}
 };
-let transcriptionWatch=null;
-function transcriptionSummary(job){
- if(!job)return 'Não há áudios pendentes de transcrição.';
- const labels={queued:'Na fila',running:'Transcrevendo',finished:'Transcrição concluída',failed:'Falha na transcrição',interrompido:'Interrompida'};
- return `${labels[job.status]||job.status} · ${job.progress}/${job.total} áudio(s)`+(job.error?` · ${job.error}`:'');
-}
-async function refreshTranscriptionStatus(cid,refreshAnswers=true){
+// Áudios históricos ficam acessíveis para transcrição manual, sem iniciar Whisper.
+async function refreshTranscriptionStatus(cid){
  const data=await call(`/api/admin/candidates/${cid}/transcription-status`);
  if(state.selectedCandidate!==cid)return;
- $('transcriptionState').textContent=transcriptionSummary(data.job)+(data.pending_audio?` · ${data.pending_audio} áudio(s) aguardando.`:'');
- if(data.job?.status==='finished' && refreshAnswers){
-   clearInterval(transcriptionWatch);transcriptionWatch=null;
-   await selectCandidate();
- }
- if(data.job?.status==='failed'||data.job?.status==='interrompido'){
-   clearInterval(transcriptionWatch);transcriptionWatch=null;
- }
- if(data.job && ['queued','running'].includes(data.job.status) && !transcriptionWatch){
-   transcriptionWatch=setInterval(()=>refreshTranscriptionStatus(cid).catch(()=>{}),6000);
- }
+ $('transcriptionState').textContent=data.pending_audio
+   ?`${data.pending_audio} áudio(s) de entrevistas anteriores sem transcrição. Ouça e transcreva manualmente as respostas abaixo; novas entrevistas usam apenas texto.`
+   :'Novas entrevistas usam apenas respostas digitadas. Nenhuma transcrição de áudio é necessária.';
 }
-$('retryTranscripts').onclick=async()=>{
- const cid=state.selectedCandidate;if(!cid)return;
- try{const r=await call(`/api/admin/candidates/${cid}/transcribe-all`,{method:'POST'});
-   info('analysisMsg',r.job_id?'Transcrição adicionada à fila. Confira o progresso.':'Não há novos áudios pendentes ou já existe um processamento em andamento.');
-   await refreshTranscriptionStatus(cid,false);
- }catch(e){info('analysisMsg',e.message,true)}
-};
-async function selectCandidate(){const cid=$('reportCandidate').value;if(!cid)return;state.selectedCandidate=cid;const c=await call(`/api/admin/candidates/${cid}`);state.detail=c;state.report=c.report;clearInterval(transcriptionWatch);transcriptionWatch=null;refreshTranscriptionStatus(cid,false).catch(()=>{});const section=c.report?.client_sections||{};
+async function selectCandidate(){const cid=$('reportCandidate').value;if(!cid)return;state.selectedCandidate=cid;const c=await call(`/api/admin/candidates/${cid}`);state.detail=c;state.report=c.report;refreshTranscriptionStatus(cid).catch(()=>{});const section=c.report?.client_sections||{};
  $('clientTech').value=(section.tecnicas||[]).join('\n\n');
  $('clientBehavior').value=(section.comportamentais||[]).join('\n\n');
- $('clientRecommendation').value=section.recomendacao||c.report?.reviewer_comment||'';const evidence=[c.cv_text?'Currículo ✓':'Currículo ausente',c.disc_text?'DISC ✓':'DISC ausente',c.linkedin_text?'LinkedIn exportado ✓':'LinkedIn não extraído'];$('reportCandidateInfo').textContent=`${c.vacancy} · ${c.status} · ${evidence.join(' · ')}`;const area=$('answersArea');area.innerHTML='';for(const q of c.questions){const a=c.answers[q.id],box=document.createElement('section');box.className='answerrow';box.innerHTML=`<strong>${escapeHTML(q.id)} · ${escapeHTML(q.category_label)}</strong><p>${escapeHTML(q.question)}</p>${a?.mode==='audio'?`<audio controls src="/api/admin/candidates/${cid}/audio/${encodeURIComponent(q.id)}"></audio><label>Transcrição do áudio<textarea rows="3" data-transcript="${escapeHTML(q.id)}" placeholder="Registre a transcrição fiel para análise">${escapeHTML(a.transcript||'')}</textarea><button type="button" class="btn small outline" data-save-transcript="${escapeHTML(q.id)}">Salvar transcrição</button> <button type="button" class="btn small outline" data-auto-transcript="${escapeHTML(q.id)}">Transcrever com Whisper local</button>`:`<p class="hint">${escapeHTML(a?.text||'Sem resposta')}</p>`}`;area.append(box)}area.querySelectorAll('[data-auto-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.autoTranscript;try{info('analysisMsg','Transcrevendo com Whisper no computador...');const v=await call(`/api/admin/candidates/${cid}/transcribe/${qid}`,{method:'POST'});info('analysisMsg','Áudio enviado para a fila de transcrição. Aguarde o resultado.');await refreshTranscriptionStatus(cid,false)}catch(err){info('analysisMsg',err.message,true)}});area.querySelectorAll('[data-save-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.saveTranscript,text=area.querySelector(`[data-transcript="${qid}"]`).value;try{await call(`/api/admin/candidates/${cid}/transcripts/${qid}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});info('analysisMsg',`Transcrição ${qid} salva. Gere novamente o dossiê.`)}catch(e){info('analysisMsg',e.message,true)}});drawReport()}
+ $('clientRecommendation').value=section.recomendacao||c.report?.reviewer_comment||'';const evidence=[c.cv_text?'Currículo ✓':'Currículo ausente',c.disc_text?'DISC ✓':'DISC ausente',c.linkedin_text?'LinkedIn exportado ✓':'LinkedIn não extraído'];$('reportCandidateInfo').textContent=`${c.vacancy} · ${c.status} · ${evidence.join(' · ')}`;const area=$('answersArea');area.innerHTML='';for(const q of c.questions){const a=c.answers[q.id],box=document.createElement('section');box.className='answerrow';box.innerHTML=`<strong>${escapeHTML(q.id)} · ${escapeHTML(q.category_label)}</strong><p>${escapeHTML(q.question)}</p>${a?.mode==='audio'?`<audio controls src="/api/admin/candidates/${cid}/audio/${encodeURIComponent(q.id)}"></audio><label>Transcrição do áudio<textarea rows="3" data-transcript="${escapeHTML(q.id)}" placeholder="Registre a transcrição fiel para análise">${escapeHTML(a.transcript||'')}</textarea><button type="button" class="btn small outline" data-save-transcript="${escapeHTML(q.id)}">Salvar transcrição</button>`:`<p class="hint">${escapeHTML(a?.text||'Sem resposta')}</p>`}`;area.append(box)}area.querySelectorAll('[data-save-transcript]').forEach(x=>x.onclick=async()=>{const qid=x.dataset.saveTranscript,text=area.querySelector(`[data-transcript="${qid}"]`).value;try{await call(`/api/admin/candidates/${cid}/transcripts/${qid}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});info('analysisMsg',`Transcrição ${qid} salva. Gere novamente o dossiê.`)}catch(e){info('analysisMsg',e.message,true)}});drawReport()}
 $('analyze').onclick=async()=>{if(!state.selectedCandidate)return;try{
- info('analysisMsg','Análise iniciada. Os áudios e critérios serão processados sem interromper a entrevista.');
+ info('analysisMsg','Organizando as respostas escritas e as evidências disponíveis.');
  $('analyze').disabled=true;
- const task=await call(`/api/admin/candidates/${state.selectedCandidate}/analyze`,{method:'POST',body:new URLSearchParams({ollama_model:$('ollamaModel').value.trim(),auto_transcribe:'true'})});
+ const task=await call(`/api/admin/candidates/${state.selectedCandidate}/analyze`,{method:'POST',body:new URLSearchParams({ollama_model:$('ollamaModel').value.trim(),auto_transcribe:'false'})});
  for(let tries=0;tries<1800;tries++){
    await new Promise(r=>setTimeout(r,1500));
    const j=await call(`/api/admin/jobs/${task.job_id}`);
