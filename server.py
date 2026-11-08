@@ -147,8 +147,8 @@ def password_hash(password:str,salt_hex:str)->str:
     return hashlib.pbkdf2_hmac('sha256',password.encode('utf-8'),bytes.fromhex(salt_hex),600_000).hex()
 
 def validate_password(password:str):
-    if len(password)<16 or len(password)>256:
-        raise HTTPException(422,'A senha precisa ter entre 16 e 256 caracteres.')
+    if len(password)<8 or len(password)>256:
+        raise HTTPException(422,'A senha precisa ter entre 8 e 256 caracteres.')
     if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
         raise HTTPException(422,'A senha precisa conter letras e números.')
 
@@ -279,7 +279,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.6.3-backup-restore','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.6.4-admin-backup-passwords','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'faster-whisper TINY cpu pt-BR (experimental; confirme logs e precisao)','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):

@@ -1,8 +1,8 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.6.3-backup-restore';
+const versaoEsperada = '9.6.4-admin-backup-passwords';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
-const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','restoreForm','restoreFile','restoreConfirmation'];
+const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
 if (versaoPagina !== versaoEsperada || ausentes.length) {
   const aviso = document.getElementById('authMsg');
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.6.3-backup-restore'){
-      indicador.textContent='V9.6.3 · Backup e restauração';
+    if(versao==='9.6.4-admin-backup-passwords'){
+      indicador.textContent='V9.6.4 · Usuários e backup';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.6.3. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.6.4. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
@@ -45,6 +45,8 @@ function info(id,text,bad=false){const el=$(id);el.classList.remove('hidden');el
 function option(elementId,value,label){const el=$(elementId);if(!el)throw new Error('Campo de seleção ausente: '+elementId);const o=document.createElement('option');o.value=String(value);o.textContent=String(label);el.append(o);return o}
 function showTab(tab){document.querySelectorAll('.tabpage').forEach(x=>x.classList.toggle('hidden',x.id!==tab));document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('selected',x.dataset.tab===tab))}
 document.querySelectorAll('[data-tab]').forEach(x=>x.onclick=()=>showTab(x.dataset.tab));
+// Atalho explícito, disponível a qualquer administrador ativo.
+$('openRestore').onclick=()=>{if(activeUser?.role!=='administrador')return;showTab('backups');$('restoreForm').scrollIntoView({behavior:'smooth',block:'start'});};
 let activeUser=null;
 async function showLoggedIn(){
  const me=await call('/api/admin/me');activeUser=me;
@@ -53,7 +55,10 @@ async function showLoggedIn(){
  if(me.must_change_password){$('workspace').classList.add('hidden');$('changePasswordScreen').classList.remove('hidden');return;}
  $('changePasswordScreen').classList.add('hidden');$('workspace').classList.remove('hidden');
  $('usersTab').classList.toggle('hidden',me.role!=='administrador');
+ $('backupsTab').classList.toggle('hidden',me.role!=='administrador');
  $('backup').classList.toggle('hidden',me.role!=='administrador');
+ $('openRestore').classList.toggle('hidden',me.role!=='administrador');
+ if(me.role!=='administrador' && document.querySelector('[data-tab="backups"].selected'))showTab('vacancies');
  await refreshAll();if(me.role==='administrador')await refreshStaffUsers();
 }
 $('loginForm').onsubmit=async e=>{e.preventDefault();try{
