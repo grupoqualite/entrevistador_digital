@@ -11,6 +11,33 @@ if (versaoPagina !== versaoEsperada || ausentes.length) {
   return;
 }
 const $=id=>document.getElementById(id), state={vacancies:[],candidates:[],selectedVacancy:null,editing:[],selectedCandidate:null,report:null,sourceParts:null};
+
+// Sincronizar a versão mostrada no painel com a versão efetivamente executada pelo servidor.
+// A consulta não utiliza dados pessoais e não altera a sessão do usuário.
+async function atualizarVersaoDoPainel(){
+  const indicador=document.getElementById('runtimeVersion');
+  if(!indicador)return;
+  try{
+    const resposta=await fetch('/api/health?_='+Date.now(),{cache:'no-store',credentials:'same-origin'});
+    if(!resposta.ok)throw new Error('HTTP '+resposta.status);
+    const diagnostico=await resposta.json();
+    const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
+    if(!versao)throw new Error('Versão ausente no diagnóstico');
+    if(versao==='9.6.3-backup-restore'){
+      indicador.textContent='V9.6.3 · Backup e restauração';
+      indicador.title='Servidor verificado: '+versao;
+    }else{
+      indicador.textContent='Servidor: '+versao;
+      indicador.title='O Render está executando versão diferente da V9.6.3. Confira o último commit implantado.';
+      indicador.style.color='#a33a2b';
+    }
+  }catch(erro){
+    indicador.textContent='Versão não verificada';
+    indicador.title='Falha ao consultar /api/health: '+erro.message;
+  }
+}
+atualizarVersaoDoPainel();
+
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const fmt=s=>escapeHTML(s).replace(/\n/g,'<br>');
 async function call(url,options={}){const res=await fetch(url,options);let data;try{data=await res.json()}catch{data={detail:'Servidor indisponível.'}}if(!res.ok)throw new Error(data.detail||`Erro HTTP ${res.status}`);return data;}
