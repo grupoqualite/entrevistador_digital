@@ -62,7 +62,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.7.2',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.7.3',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -226,6 +226,7 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
             # Recuperação de backups de versões anteriores: conservar integralmente as notas
             # e a revisão humana, preenchendo apenas as seções externas que faltavam.
             provisional=draft_from_sources(old,row['cv_text'],row['linkedin_text'],row['disc_text'])
+            old['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
             old['client_sections']={
                 'tecnicas':provisional['tecnicas'], 'comportamentais':provisional['comportamentais'],
                 'recomendacao':provisional['recomendacao'],
@@ -243,6 +244,7 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
     missing_audio=sum(1 for x in answers.values() if x.get('audio_file') and not x.get('transcript','').strip())
     if missing_audio:report['pendencias'].append(f'{missing_audio} gravação(ões) histórica(s) sem transcrição; nenhum conteúdo dessas gravações foi avaliado.')
     provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+    report['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
     report['client_sections']={
         'tecnicas':provisional['tecnicas'],
         'comportamentais':provisional['comportamentais'],
@@ -344,7 +346,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.2-editorial-review','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.3-behavior-integrated','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -807,6 +809,7 @@ def _do_analysis(cid:str,model:str,auto_transcribe:bool,job_id:str):
         # Pode ser revisada mesmo no plano Render gratuito sem Ollama.
         try:
             provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+            report['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
             report['client_sections']={'tecnicas':provisional['tecnicas'],'comportamentais':provisional['comportamentais'],'recomendacao':provisional['recomendacao'],'validacoes_tecnicas':provisional['validacoes_tecnicas'],'validacoes_comportamentais':provisional['validacoes_comportamentais']}
             report['draft_mode']=provisional['modo']
             report['draft_pending']={'tecnicas':provisional['validacoes_tecnicas'],'comportamentais':provisional['validacoes_comportamentais']}
@@ -1044,6 +1047,23 @@ async def generate_client_draft(request:Request,cid:str):
     except ValueError as ex:
         raise HTTPException(422,str(ex))
 
+def verify_external_narrative(texts):
+    """Impede que minutas antigas com marcadores de coleta sejam aprovadas.
+
+    Não tenta substituir automaticamente palavras dentro de uma análise humana.
+    Requer regeneração e revisão do texto para manter seu sentido profissional.
+    """
+    combined=' '.join(str(v or '') for v in texts)
+    forbidden=(
+        r'(?i)\b(?:na|pela|da)\s+resposta\s+(?:a\s+)?(?:q\s*\d+|[àa]\s+pergunta)',
+        r'(?i)\b(?:pergunta|quest[aã]o)\s*q\s*\d+',
+        r'(?i)\b(?:perfil profissional exportado|texto extra[ií]do|documento importado|arquivo anexado|no curr[ií]culo importado)\b',
+        r'(?i)\b(?:o candidato declarou)\s*[:：]\s*[“"]',
+    )
+    if any(re.search(pattern,combined) for pattern in forbidden):
+        raise HTTPException(422,'O parecer contém referências a códigos de perguntas, importação ou trechos de coleta. Gere novamente a minuta e revise as três seções antes de aprovar.')
+
+
 @APP.post('/api/admin/candidates/{cid}/client-report')
 async def save_client_report(request:Request,cid:str):
     """Salva textos destinados ao cliente, separados da matriz quantitativa interna."""
@@ -1059,6 +1079,7 @@ async def save_client_report(request:Request,cid:str):
     behavioral=blocks('comportamentais')
     reco=payload.get('recomendacao','')
     if not isinstance(reco,str) or len(reco)>7000:raise HTTPException(422,'Recomendação inválida.')
+    verify_external_narrative(tech+behavioral+[reco])
     with conn() as db:
         row=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
         if not row:raise HTTPException(404,'Gere a análise antes de preparar o parecer do cliente.')
@@ -1125,6 +1146,7 @@ async def approve_and_export_pdf(request:Request,cid:str):
         raise HTTPException(422,'Preencha o Parecer de Recomendação antes de aprovar.')
     if len(reco)>7000:
         raise HTTPException(422,'A recomendação excede o limite de 7.000 caracteres.')
+    verify_external_narrative(tech+behavior+[reco])
     with conn() as db:
         candidate=db.execute('SELECT status FROM candidates WHERE id=?',(cid,)).fetchone()
         saved=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()

@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.7.2-editorial-review';
+const versaoEsperada = '9.7.3-behavior-integrated';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.7.2-editorial-review'){
-      indicador.textContent='V9.7.2 · Parecer aprofundado';
+    if(versao==='9.7.3-behavior-integrated'){
+      indicador.textContent='V9.7.3 · Parecer integrado';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.7.2. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.7.3. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){

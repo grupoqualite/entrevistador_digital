@@ -213,7 +213,7 @@ def identify_gaps(technical:list[dict],behavior:list[dict],tech_answers:list[dic
         if explicit_non_experience(item['answer']):
             tech_gaps.insert(0,'Confirmar a necessidade de treinamento para '+item['criterion'].lower()+'.')
     if not tech_answers:
-        tech_gaps.append('As respostas estão ausentes ou curtas demais para demonstrar execução prática; solicitar casos que esclareçam método, autonomia e resultados.')
+        tech_gaps.append('Aprofundar a prática efetiva das atividades essenciais, esclarecendo método, autonomia e resultados.')
     soft_missing=count_matches(behavior,soft_answers)
     if soft_missing:
         soft_gaps.append('Solicitar um exemplo observável de '+join_topics(soft_missing,2)+'.')
@@ -224,172 +224,227 @@ def identify_gaps(technical:list[dict],behavior:list[dict],tech_answers:list[dic
     return tech_gaps[:4],soft_gaps[:3]
 
 
-def draft_from_sources(report:dict, cv_text:str='', linkedin_text:str='', disc_text:str='')->dict:
-    """Minuta aprofundada. A análise qualitativa requer leitura e aprovação humana.
 
-    Não atribui notas, não afirma competência apenas por correspondência de palavras
-    e não produz recomendação positiva/negativa automaticamente.
+# A versão cliente sintetiza a experiência profissional, não o processo de coleta.
+# O conteúdo completo das fontes continua disponível internamente para auditoria.
+from behavioral_analysis import build_behavioral, split_document, negated
+
+CAREER_AREAS = [
+  (r'atendiment|recep[cç][aã]o|balc[aã]o','atendimento e relacionamento com clientes'),
+  (r'vendas?|comercial|prospec|negocia','rotinas comerciais'),
+  (r'pedido|estoque|separa[cç][aã]o|log[ií]stica','controle de pedidos e estoque'),
+  (r'confer[eê]ncia|qualidade|inspe[cç][aã]o|checagem','conferência e controle de qualidade'),
+  (r'crm|funil|follow.up|indicador|sla','registro e acompanhamento de indicadores e processos'),
+  (r'obra|cronograma|or[cç]amento|execu[cç][aã]o','acompanhamento de projetos e entregas'),
+  (r'financeir|fatur|concilia|contas a pagar|fluxo de caixa','rotinas financeiras e controles'),
+  (r'campanha|marketing|m[ií]dia paga|social media|tr[aá]fego','ações de marketing e comunicação'),
+  (r'desenvolvimento de software|python|programa[cç][aã]o|sql|dados','desenvolvimento ou análise de sistemas e dados'),
+]
+
+TECH_ACTIONS = [
+  (r'\b(?:atendia|atendi|atendimento de balc[aã]o|atendimento presencial|atendimento ao p[uú]blico)\b','atendimento ao público'),
+  (r'\bwhatsapp\b','contato por WhatsApp'),
+  (r'\b(?:esclareci|orientei|expliquei)\b','orientação ao cliente'),
+  (r'\b(?:conferia|conferi|chequei|verificava|verifiquei|comparava|comparei)\b','conferência de informações'),
+  (r'\b(?:pedido|pedidos)\b','rotina de pedidos'),
+  (r'\b(?:crm|erp)\b','uso de sistema de gestão'),
+  (r'\b(?:estoque|invent[aá]rio)\b','consulta ou acompanhamento de estoque'),
+  (r'\b(?:funil|prospec[cç][aã]o|leads?)\b','processo de prospecção e acompanhamento comercial'),
+  (r'\b(?:indicador|metas?|convers[aã]o)\b','acompanhamento de resultados'),
+  (r'\b(?:or[cç]amento|cronograma|fornecedores?)\b','controle de etapas e recursos'),
+  (r'\b(?:excel|planilha|relat[oó]rio)\b','registro ou análise de informações'),
+]
+
+
+def _facts(text:str,areas=TECH_ACTIONS,max_items=5)->list[str]:
+    seen=set();out=[]
+    for pattern,label in areas:
+        if re.search(pattern,str(text or ''),re.I) and label not in seen:
+            out.append(label);seen.add(label)
+        if len(out)>=max_items:break
+    return out
+
+
+def _doc_areas(cv:str,linkedin:str)->list[str]:
+    # Seleciona menções positivas em frases da trajetória, evitando confundir
+    # 'não tenho experiência em X' com evidência favorável de X.
+    source=split_document(cv)+split_document(linkedin)
+    # Documentos curtos podem não conter frases longas; ainda assim excluímos
+    # negativas explícitas e duplicatas.
+    if not source:
+        source=[x.strip() for x in re.split(r'[\n.]+',(cv or '')+'\n'+(linkedin or '')) if len(x.strip())>18]
+    affirmative=' '.join(x for x in source if not negated(x))
+    terms=[]
+    for pattern,label in CAREER_AREAS:
+        if re.search(pattern,affirmative,re.I):terms.append(label)
+    return terms[:5]
+
+
+def _technical_account(e:dict)->str:
+    topic=lower_start(e['criterion']).strip(' .')
+    answer=e['answer']
+    if explicit_non_experience(answer):
+        scope=''
+        if re.search(r'produtos? de higiene',answer,re.I):
+            scope=' A experiência informada limita-se, nesse aspecto, a produtos de higiene.'
+        return (f'Não há experiência direta declarada em {topic}.{scope} '
+                'Essa diferença precisa ser considerada à luz da exigência operacional da função e das possibilidades de treinamento, '
+                'sem desconsiderar experiências próximas de atendimento ou conferência.')
+    facts=_facts(answer)
+    if len(facts)>=2:
+        text=(f'Na atuação relacionada a {topic}, descreve {_natural_join(facts[:4])}. '
+              'As atividades são pertinentes ao escopo da posição, mas a extensão da responsabilidade pessoal '
+              'e o grau de autonomia dependem do contexto em que foram executadas.')
+    elif facts:
+        text=(f'Para {topic}, há referência prática a {facts[0]}. '
+              'O elemento aproxima a experiência da atividade requerida, mas não esclarece, isoladamente, '
+              'frequência, método de execução ou participação nas decisões.')
+    else:
+        text=(f'O histórico ainda não oferece descrição operacional suficiente para aferir a experiência em {topic}. '
+              'Não é adequado presumir domínio técnico apenas pela familiaridade com o nome da atividade.')
+    if _has_result(answer):
+        text+=' Há menção a resultados ou indicadores, ainda dependentes de contextualização sobre período, base de comparação e participação pessoal.'
+    return text
+
+
+def _natural_join(items):
+    items=[str(x) for x in items if x]
+    if not items:return ''
+    if len(items)==1:return items[0]
+    return ', '.join(items[:-1])+' e '+items[-1]
+
+
+def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text:str='')->dict:
+    """Redige minuta profissional com análise interdisciplinar e pontos de validação.
+
+    Sem motor semântico, esta análise é conservadora: regras localizam condutas
+    descritas e não emitem julgamento de personalidade, score ou recomendação.
+    O recrutador mantém poder de revisar, ratificar e definir recomendação.
     """
     criteria=report.get('criteria') or []
     responsibilities=[c for c in criteria if c.get('category_key')=='responsabilidade']
     hard=[c for c in criteria if c.get('category_key')=='hard']
     tech=responsibilities+hard
     behavior=[c for c in criteria if c.get('category_key')=='soft']
-    cv=bool(str(cv_text).strip());li=bool(str(linkedin_text).strip());disc=bool(str(disc_text).strip())
+    cv=bool(str(cv_text or '').strip());li=bool(str(linkedin_text or '').strip())
     if not (cv or li or any(str(c.get('answer','')).strip() for c in criteria)):
-        raise ValueError('Sem respostas nem histórico profissional para fundamentar o parecer. Confira os registros antes de gerar a minuta.')
-    role=clean(report.get('job_title') or 'a oportunidade',100)
-    t_answers,trepeat=unique_responses(tech,7)
-    b_answers,brepeat=unique_responses(behavior,4)
-    doc_cv=source_passages(tech,'Curr',3) or source_sentences(cv_text,tech,2)
-    doc_li=source_passages(tech,'LinkedIn',2) or source_sentences(linkedin_text,tech,2)
-    t_pending,b_pending=identify_gaps(tech,behavior,t_answers,b_answers,cv,li,disc)
-    technical=[];behavioral=[]
-
-    if doc_cv or doc_li:
-        prior={dedup_key(x) for x in doc_cv}
-        unique=[x for x in doc_li if dedup_key(x) not in prior]
-        sources=(doc_cv[:2]+unique[:1])
+        raise ValueError('Ainda não há evidências profissionais suficientes para redigir uma minuta. Confira os registros da candidatura.')
+    role=clean(report.get('job_title') or 'a oportunidade',120)
+    t_answers,repeated=unique_responses(tech,10)
+    soft_answers,_=unique_responses(behavior,10)
+    gaps_tech,gaps_soft=identify_gaps(tech,behavior,t_answers,soft_answers,cv,li,bool(disc_text))
+    technical=[]
+    career_areas=_doc_areas(cv_text,linkedin_text)
+    if career_areas:
         technical.append(
-            f'Na trajetória profissional, há experiências relacionadas ao escopo de {role}, '
-            'com registros como '+ '; '.join(quote_snippet(x,250) for x in sources)+'. '
-            'Esse histórico indica contato com parte das rotinas pertinentes à função. A extensão '
-            'das responsabilidades e os resultados alcançados precisam ser dimensionados pelos '
-            'exemplos concretos da entrevista, especialmente quando a atividade exige prática específica.'
+            f'A trajetória profissional reúne experiências relacionadas a {_natural_join(career_areas[:4])}. '
+            f'Para a posição de {role}, esse repertório deve ser considerado conforme a proximidade com as atribuições centrais, '
+            'distinguindo experiências diretamente executadas de atividades de suporte. '
+            'A presença dessas atividades no histórico não permite presumir volume, resultados ou autonomia que não tenham sido descritos.'
         )
-    if not (doc_cv or doc_li) and (cv or li):
+    elif cv or li:
         technical.append(
-            'O histórico profissional apresentado ainda não permite relacionar com precisão as experiências '
-            f'às principais atribuições de {role}. A profundidade da atuação, os períodos e a responsabilidade '
-            'pelas entregas devem ser esclarecidos antes de uma conclusão sobre domínio técnico.'
+            f'A trajetória profissional exige maior detalhamento para estabelecer a correspondência com as atribuições de {role}. '
+            'Antes de concluir o nível de domínio técnico, é necessário delimitar as atividades efetivamente exercidas, '
+            'a responsabilidade pelas entregas e a experiência no contexto específico da função.'
         )
-
-    related=[criterion_label(c) for c in responsibilities[:3]]
-    if related and t_answers:
+    tasks=[criterion_label(c) for c in responsibilities[:4]]
+    if tasks:
         technical.append(
-            f'Considerando o escopo de {role}, as responsabilidades centrais envolvem {join_topics(related)}. '
-            'A entrevista permite examinar como o candidato participou dessas rotinas, '
-            'distinguindo a execução direta de atividades de apoio e da responsabilidade por resultados.'
+            f'Entre as responsabilidades da função estão {_natural_join([lower_start(x) for x in tasks[:3]])}. '
+            'A análise dessas atividades exige verificar a prática no ambiente real, a segurança dos procedimentos, '
+            'o acompanhamento das entregas e a capacidade de lidar com situações fora da rotina.'
         )
-    res_answers=[e for e in t_answers if e['category']=='responsabilidade']
-    hard_answers=[e for e in t_answers if e['category']=='hard']
-    for e in res_answers[:3]:technical.append(quote_paragraph(e))
-    if hard_answers:
-        e=hard_answers[0]
-        technical.append(quote_paragraph(e,'Quanto aos conhecimentos e recursos necessários à função'))
-        if len(hard_answers)>1:
-            other=hard_answers[1]
+    described=[e for e in t_answers if e['category']=='responsabilidade'][:5]
+    described += [e for e in t_answers if e['category']=='hard'][:3]
+    positive=[e for e in described if not explicit_non_experience(e['answer'])]
+    denied=[e for e in described if explicit_non_experience(e['answer'])]
+    if positive:
+        action_labels=[]
+        for entry in positive:
+            for fact in _facts(entry['answer']):
+                if fact not in action_labels:action_labels.append(fact)
+        if action_labels:
             technical.append(
-                f'Ainda no campo técnico, ao abordar {lower_start(other["criterion"])}, descreveu: '
-                f'{quote_snippet(other["answer"],300)}. '
-                'A análise precisa distinguir familiaridade com essa atividade de aplicação autônoma '
-                'e recorrente na rotina profissional.'
+                'Na rotina profissional, descreve atividades como '+_natural_join(action_labels[:6])+'. '
+                'Esses elementos oferecem base para reconhecer familiaridade com etapas da operação, '
+                'mas devem ser dimensionados conforme a responsabilidade direta, o método aplicado '
+                'e a frequência das entregas. Não se pode equiparar o uso pontual de uma ferramenta '
+                'ao domínio integral do processo em que ela é utilizada.'
             )
-    if not t_answers:
-        technical.append(
-            'As informações profissionais disponíveis não foram acompanhadas de exemplos suficientemente '
-            'específicos de execução das atividades previstas na vaga. Por isso, não há base para afirmar '
-            'domínio prático, resultados alcançados ou autonomia sobre as principais entregas.'
-        )
-    if trepeat:
-        technical.append(
-            'Parte das respostas apresentou o mesmo exemplo para diferentes requisitos. '
-            'Esse relato foi considerado uma única evidência, não demonstrações independentes '
-            'de competências distintas. É importante aprofundar as atividades ainda não exemplificadas.'
-        )
-
-
-    if b_answers:
-        behavioral.append(
-            'A entrevista traz situações concretas que permitem avaliar a conduta profissional descrita, '
-            'principalmente na relação com clientes, organização da rotina e encaminhamento de problemas. '
-            'A consistência desses comportamentos deve ser considerada à luz de outros episódios e da experiência acumulada.'
-        )
-        for e in b_answers[:3]:
-            theme=e['criterion'].casefold()
-            if 'comunic' in theme or 'relacion' in theme:
-                comment=('O episódio traz uma situação de interação com outra pessoa e permite avaliar '
-                         'como o candidato descreve a escuta, a comunicação e o encaminhamento da demanda.')
-            elif 'organiza' in theme or 'atenção' in theme or 'detalh' in theme:
-                comment=('O relato descreve procedimentos de organização e conferência, úteis para '
-                         'examinar o cuidado com a execução e a prevenção de falhas na rotina.')
-            elif 'autonom' in theme or 'decis' in theme or 'iniciativ' in theme:
-                comment=('A experiência relatada oferece elementos para examinar participação pessoal '
-                         'na decisão e as alternativas consideradas diante do problema.')
-            else:
-                comment=('O relato fornece um episódio profissional específico, cuja consistência '
-                         'deve ser confrontada com outros exemplos de atuação.')
-            behavioral.append(
-                f'Em relação a {lower_start(e["criterion"])}, o candidato relatou: {quote_snippet(e["answer"],330)}. '
-                +comment
+        else:
+            technical.append(
+                'A experiência descrita ainda não detalha os procedimentos utilizados nas atividades centrais '
+                'da função. É necessário identificar o que foi executado diretamente, quais recursos foram usados '
+                'e como a qualidade da entrega foi conferida.'
             )
+        for e in positive:
+            if e['category']=='hard' and len(_facts(e['answer']))>=1:
+                technical.append(
+                    f'No âmbito de {lower_start(e["criterion"]).strip(" .")}, a experiência informada inclui '
+                    f'{_natural_join(_facts(e["answer"])[:3])}. O contexto relatado permite avaliar familiaridade '
+                    'com a rotina, mas não comprova resultados quantitativos nem responsabilidade integral pelas metas '
+                    'sem informações complementares.'
+                )
+                break
     else:
-        behavioral.append(
-            'As declarações disponíveis não trazem situações suficientemente detalhadas para caracterizar '
-            'com segurança os comportamentos requeridos pela função. A avaliação deve explorar casos '
-            'concretos de relacionamento, organização e tomada de decisão pertinentes às exigências da vaga.'
+        technical.append(
+            'Não foram descritos episódios suficientemente específicos para dimensionar a execução das '
+            'responsabilidades essenciais. A ausência de detalhamento não permite concluir que as competências '
+            'inexistam, mas exige validação direta antes de recomendar o candidato.'
         )
-    if brepeat:
-        behavioral.append(
-            'O mesmo episódio foi utilizado em respostas a diferentes competências comportamentais. '
-            'Ele foi tratado como um relato único; convém solicitar outro exemplo antes de atribuir '
-            'a mesma interpretação a características distintas.'
-        )
-    observations=(report.get('disc') or {}).get('observations') or []
-    if disc and observations:
-        values=[]
-        for o in observations[:6]:
-            dimension=clean(o.get('dimension'),70);value=clean(o.get('reported_value') or 'não informado',50)
-            if dimension:values.append(f'{dimension}: {value}')
-        if values:
-            behavioral.append(
-                'No DISC, os indicadores apresentados são '+', '.join(values)+'. '
-                'A leitura dessas dimensões deve observar a escala e a interpretação do instrumento aplicado. '
-                'O perfil contribui como referência complementar, sem substituir os comportamentos '
-                'demonstrados na entrevista nem permitir previsões isoladas de desempenho.'
-            )
-    elif disc:
-        # Não menciona upload, extração ou falhas de processamento em documento do cliente.
-        b_pending.append('Conferir a leitura integral do DISC e sua correspondência com situações profissionais concretas.')
-    if b_pending:
-        behavioral.append(
-            'Para complementar a análise comportamental, recomenda-se '+
-            '; '.join(x[:1].lower()+x[1:].rstrip('.') for x in b_pending[:2])+'.'
-        )
-
-    covered=[e['criterion'] for e in t_answers if not explicit_non_experience(e['answer'])]
-    denied=[e['criterion'] for e in t_answers if explicit_non_experience(e['answer'])]
-    doc_supported=bool(doc_cv or doc_li)
-    if covered:
-        opening=(f'Para a posição de {role}, a entrevista contém relatos relacionados a '
-                 f'{join_topics(covered,3)}. ')
-        strength=('O histórico profissional oferece informações adicionais sobre áreas de atuação, '
-                  'sem comprovar, por si só, a extensão dos resultados.' if doc_supported else
-                  'A consistência desses relatos deverá ser verificada em conjunto com o histórico de experiência.')
-    elif doc_supported:
-        opening=(f'Para a posição de {role}, o histórico profissional apresenta experiências associadas '
-                 'a parte das atividades requeridas. ')
-        strength='Ainda faltam exemplos de execução e resultados que permitam dimensionar a aderência prática.'
-    else:
-        opening=f'Para a posição de {role}, não há evidências suficientemente específicas para uma conclusão de aderência técnica. '
-        strength='A ausência desses elementos não equivale à ausência de experiência, mas impede uma recomendação fundamentada neste momento.'
-    gaps=[x for x in (t_pending+b_pending) if not (denied and 'treinamento' in x.casefold() and any(y.casefold() in x.casefold() for y in denied))][:4]
-    rec=[opening+strength]
     if denied:
-        rec.append('O candidato declarou não ter experiência direta em '+join_topics(denied,2)+'. '
-                   'Essa diferença em relação ao escopo da posição merece verificação sobre o nível de prática requerido e a possibilidade de treinamento.')
-    if gaps:
-        rec.append('Na próxima etapa, os pontos prioritários de validação são '+
-                   '; '.join(x[:1].lower()+x[1:].rstrip('.') for x in gaps)+'. '
-                   'A confirmação deve se apoiar em situações reais, atribuições efetivas e resultados informados.')
-    rec.append(
-        'A recomendação de encaminhamento deve ser definida pelo recrutador após conferir '
-        'a consistência das evidências e as condições específicas da oportunidade. '
-        'Os elementos ainda não demonstrados foram mantidos como pendências, sem presunção de inadequação.'
-    )
+        denied_labels=[lower_start(e['criterion']) for e in denied]
+        contextual=[]
+        if any(re.search(r'produtos? de higiene',e['answer'],re.I) for e in denied):
+            contextual.append('a atuação mencionada ficou restrita a produtos de higiene')
+        technical.append(
+            'Há uma lacuna expressamente indicada quanto a '+_natural_join(denied_labels[:2])+'. '
+            +('Nesse aspecto, '+_natural_join(contextual)+'. ' if contextual else '')
+            +'A diferença deve ser avaliada de acordo com a necessidade de experiência prévia e com os procedimentos de treinamento da organização.'
+        )
+    if repeated:
+        gaps_tech.append('Aprofundar outras experiências profissionais, além do mesmo episódio usado para diferentes critérios.')
 
-    return {'tecnicas':technical[:9], 'comportamentais':behavioral[:7],
-            'validacoes_tecnicas':t_pending,'validacoes_comportamentais':b_pending,
-            'recomendacao':'\n\n'.join(rec),
-            'modo':'minuta profissional baseada em evidências, sem pontuação automática',
-            'aviso':'Conferência editorial e técnica obrigatória pelo recrutador antes de aprovar o parecer.'}
+    behavioral,pending_beh,behavior_trace=build_behavioral(criteria,cv_text,linkedin_text,disc_text,report.get('disc'))
+    # Registra o mapa de fontes somente no relatório interno; não será incluído no PDF de cliente.
+    if not behavioral:
+        behavioral=['Não há condutas observáveis suficientes para caracterizar com segurança as competências comportamentais exigidas.']
+    gaps_soft = list(dict.fromkeys(pending_beh+gaps_soft))[:4]
+    positive=[x for x in career_areas[:3]]
+    rec=[]
+    if positive:
+        rec.append(
+            f'Para a vaga de {role}, o histórico indica exposição profissional a {_natural_join(positive)}. '
+            'A proximidade com as exigências da posição depende de comprovar a prática direta nas atividades essenciais, '
+            'o alcance das responsabilidades e os resultados efetivamente obtidos.'
+        )
+    elif described:
+        rec.append(
+            f'Para a vaga de {role}, foram identificados elementos de experiência relacionados a parte das atividades previstas. '
+            'O grau de aderência permanece condicionado à consistência das experiências e à validação das atribuições efetivamente executadas.'
+        )
+    else:
+        rec.append(
+            f'Para a vaga de {role}, os elementos disponíveis ainda não permitem uma conclusão segura sobre aderência técnica e comportamental. '
+            'Essa insuficiência de evidências não equivale, por si só, a inadequação profissional.'
+        )
+    if denied:
+        rec.append('É necessário considerar a ausência de experiência direta declarada em '+_natural_join([lower_start(x['criterion']) for x in denied[:2]])+'.')
+    next_points=[]
+    for point in gaps_tech+gaps_soft:
+        if point and point.casefold() not in [x.casefold() for x in next_points]:next_points.append(point.strip().rstrip('.'))
+        if len(next_points)>=3:break
+    if next_points:
+        rec.append('Antes de uma indicação conclusiva, convém '+ '; '.join(x[0].lower()+x[1:] for x in next_points)+'.')
+    rec.append('A decisão de recomendar o avanço deverá ser registrada pelo recrutador, após a avaliação das evidências e das condições efetivas da oportunidade.')
+    return {
+      'tecnicas':technical[:7],
+      'comportamentais':behavioral[:6],
+      'validacoes_tecnicas':list(dict.fromkeys(gaps_tech))[:4],
+      'validacoes_comportamentais':gaps_soft,
+      'recomendacao':'\n\n'.join(rec),
+      'evidencias_comportamentais_internas':behavior_trace,
+      'modo':'Minuta documental com cruzamento de informações profissionais e avaliação humana obrigatória',
+      'aviso':'Conferência do recrutador obrigatória antes da aprovação.'
+    }
