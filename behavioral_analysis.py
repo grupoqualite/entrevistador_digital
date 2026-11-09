@@ -141,6 +141,7 @@ def disc_paragraph(disc_text,report_disc,axes_seen):
         raw_name=str(v.get('dimension','')).strip()
         key=raw_name.upper() if raw_name.upper() in labels else reverse.get(raw_name.casefold())
         raw=str(v.get('reported_value','')).strip()
+        if raw.endswith('.0'):raw=raw[:-2]
         if key and raw and len(raw)<14:values[key]=raw
     raw=str(disc_text or '')
     # O comparativo costuma ser anexado depois do laudo e não pode desaparecer
@@ -171,7 +172,25 @@ def disc_paragraph(disc_text,report_disc,axes_seen):
         parts.append('O DISC descreve tendências associadas a '+_natural_list(qualitative,4)+'.')
     elif values:
         ordered=', '.join(f'{labels[k]} ({k}: {values[k]})' for k in 'DISC' if k in values)
-        parts.append(f'O DISC apresenta os indicadores {ordered}. A escala e as condições de aplicação precisam ser verificadas antes de qualquer interpretação qualitativa desses números.')
+        if ('segmentos de 1 a 7' in raw.lower() and ('recrutei' in raw.lower() or 'recrutest' in raw.lower())):
+            parts.append(f'O DISC do Recrutei apresenta {ordered}, em escala de sete segmentos.')
+            tendencies={
+                'D':('preferência relativamente maior por iniciativa e posicionamento', 'menor inclinação espontânea a impor decisões'),
+                'I':('maior disposição para comunicação expansiva e influência social', 'estilo mais reservado nas interações'),
+                'S':('preferência por constância e previsibilidade das rotinas', 'maior facilidade para alternar o ritmo de execução'),
+                'C':('preferência por normas, verificações e padrões explícitos', 'maior flexibilidade em relação a formalizações'),
+            }
+            hints=[]
+            for key in 'DISC':
+                try:v=int(float(values.get(key,'')))
+                except (ValueError,TypeError):continue
+                if key=='S' and v>=6:hints.append('elevada estabilidade, associada a maior preferência por rotinas previsíveis')
+                elif key=='I' and v<=2:hints.append('influência baixa, que pode indicar comunicação menos expansiva, sem demonstrar incapacidade de atendimento')
+                elif key=='D' and v>=5:hints.append('dominância moderada ou elevada, compatível com maior iniciativa em determinadas situações')
+                elif key=='C' and v>=6:hints.append('conformidade elevada, associada à preferência por padrões e verificações')
+            if hints:parts.append('Considerados isoladamente, os segmentos sugerem '+ '; '.join(hints[:3])+'. Essas tendências devem ser confrontadas com situações concretas da trajetória e da entrevista.')
+        else:
+            parts.append(f'O DISC apresenta os indicadores {ordered}. A escala e as condições de aplicação precisam ser verificadas antes de qualquer interpretação qualitativa desses números.')
     parts.append(f'Essas informações são complementares às condutas relatadas, em especial {axes_txt}, e não comprovam, isoladamente, autonomia, desempenho ou reação à pressão.')
     return ' '.join(parts),None
 

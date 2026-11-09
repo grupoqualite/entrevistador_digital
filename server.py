@@ -29,6 +29,7 @@ from draft_v9 import draft_sections
 from evidence_draft import draft_from_sources
 from question_upgrade_v9 import improve_questions
 from client_report import render_client_pdf
+from recrutei_disc import enrich_disc_comparative, enrich_individual_visual_disc, extract_individual_visual_disc, reconcile_disc_sources
 
 BASE=Path(__file__).resolve().parent
 PRODUCTION=os.environ.get('ENTREVISTADOR_ENV','').lower()=='production'
@@ -62,7 +63,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.7.4',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.7.5',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -277,11 +278,30 @@ def prepare_dossier_now(request:Request,cid:str):
             'client_sections':report['client_sections'],'review_status':report.get('review_status')}
 
 
-async def save_file(file:UploadFile|None,subdir:str)->tuple[str,str,dict]:
+async def save_file(file:UploadFile|None,subdir:str,*,allow_visual_disc:bool=False)->tuple[str,str,dict]:
     if not file or not file.filename:return '','',{}
     content=await file.read(MAX_UPLOAD+1)
     if len(content)>MAX_UPLOAD:raise HTTPException(413,'Arquivo acima de 12 MB.')
     try: ex=extract(file.filename,content)
+    except ValueError as err:
+        # Relatórios DISC da Recrutei podem ser PDFs inteiramente visuais.
+        # O arquivo é preservado; os indicadores são extraídos do comparativo textual.
+        if allow_visual_disc and Path(file.filename).suffix.lower()=='.pdf' and 'texto suficiente' in str(err):
+            import fitz
+            try:
+                with fitz.open(stream=content,filetype='pdf') as pdf:
+                    if len(pdf)<1 or len(pdf)>30:raise ValueError('Número de páginas inválido.')
+                try:
+                    interpreted, fields=enrich_individual_visual_disc(content)
+                    ex={'text':interpreted,'parts':[{'ref':'gráfico DISC, página 3','text':interpreted}],
+                        'sections':[{'ref':'gráfico DISC, página 3','length':len(interpreted)}],
+                        'chars':len(interpreted),'visual_only':True,'disc_fields':fields}
+                except ValueError as parse_error:
+                    # Nunca inventar pontuações quando a geometria for diferente.
+                    ex={'text':'LAUDO DISC VISUAL: indicadores não reconhecidos automaticamente. Conferir o gráfico original. Motivo: '+str(parse_error)[:180],
+                        'parts':[],'sections':[],'chars':0,'visual_only':True}
+            except Exception:raise HTTPException(422,f'{file.filename}: PDF não pôde ser validado.')
+        else:raise HTTPException(422,f'{file.filename}: {err}')
     except Exception as err:raise HTTPException(422,f'{file.filename}: {err}')
     suffix=Path(file.filename).suffix.lower()
     stored=f'{subdir}/{secrets.token_hex(14)}{suffix}'
@@ -350,7 +370,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.4-reviewed-evidence','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.5-disc-brand','build':'disc-individual-visual-logo-consolidado','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -589,10 +609,10 @@ async def create_candidate(request:Request,vacancy_id:str=Form(...),name:str=For
     if linkedin_url and not re.match(r'^https://(www\.)?linkedin\.com/(in|pub)/',linkedin_url,re.I):raise HTTPException(422,'Informe um link HTTPS de perfil LinkedIn válido ou deixe em branco.')
     cid=uid();folder=f'candidatos/{cid}'
     cv_path,cv_text,_=await save_file(cv,folder)
-    disc_path,disc_text,_=await save_file(disc,folder)
+    disc_path,disc_text,_=await save_file(disc,folder,allow_visual_disc=True)
     li_path,li_extracted,_=await save_file(linkedin_pdf,folder)
-    comp_path,comp_text,_=await save_file(disc_comparativo,folder)
-    if comp_text:disc_text=(disc_text+'\n\nCOMPARATIVO DISC FORNECIDO:\n'+comp_text).strip()[:120000]
+    comp_path,comp_text,_=await save_file(disc_comparativo,folder,allow_visual_disc=True)
+    if comp_text:disc_text=reconcile_disc_sources(disc_text,comp_text)
     linkedin_text=(linkedin_text.strip()+'\n'+li_extracted.strip()).strip()[:100000]
     token=secrets.token_urlsafe(24)
     with conn() as db:
@@ -601,6 +621,36 @@ async def create_candidate(request:Request,vacancy_id:str=Form(...),name:str=For
                    (cid,vacancy_id,name,linkedin_url[:700],cv_text[:120000],disc_text[:120000],linkedin_text,cv_path,disc_path,li_path,token,'convidado',now(),(datetime.now()+timedelta(days=14)).isoformat(timespec='seconds')))
     base=os.environ.get('ENTREVISTADOR_PUBLIC_URL','').strip().rstrip('/') or str(request.base_url).rstrip('/')
     return {'id':cid,'name':name,'invite':base+'/entrevista/'+token,'source_status':{'curriculo':bool(cv_text),'disc':bool(disc_text),'linkedin':bool(linkedin_text)}}
+
+
+@APP.post('/api/admin/candidates/{cid}/reprocess-disc')
+def reprocess_existing_disc(request:Request,cid:str):
+    """Reinterpreta o DISC visual previamente anexado, quando ainda não há parecer aprovado."""
+    must_admin(request)
+    with conn() as db:
+        row=db.execute('SELECT * FROM candidates WHERE id=?',(cid,)).fetchone()
+        if not row:raise HTTPException(404,'Candidato não encontrado.')
+        existing=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+        if existing:
+            report=json.loads(existing['report_json'])
+            if report.get('reviewed_count',0) or report.get('client_approved_at'):
+                raise HTTPException(409,'Já existe revisão ou aprovação humana. Preserve o parecer antes de reprocessar.')
+    rel=str(row['disc_file'] or '').strip()
+    if not rel:raise HTTPException(422,'Não há DISC individual anexado a este candidato.')
+    file=UPLOADS/rel
+    if not file.is_file():raise HTTPException(410,'O PDF do DISC não está mais no armazenamento. Anexe novamente o documento original.')
+    try:visual,_=enrich_individual_visual_disc(file.read_bytes())
+    except ValueError as err:raise HTTPException(422,'O gráfico DISC não pôde ser identificado: '+str(err))
+    stored=row['disc_text'] or ''
+    comparative=''
+    if 'TEXTO ORIGINAL DO COMPARATIVO:' in stored:
+        comparative=stored.split('TEXTO ORIGINAL DO COMPARATIVO:',1)[1].split('\n\nLAUDO DISC INDIVIDUAL:',1)[0].strip()
+    combined=reconcile_disc_sources(visual,comparative)
+    with conn() as db:
+        db.execute('UPDATE candidates SET disc_text=? WHERE id=?',(combined,cid))
+        db.execute('DELETE FROM reports WHERE candidate_id=?',(cid,))
+    return {'ok':True,'message':'Leitura do DISC individual atualizada. Prepare novamente a minuta para incorporar os resultados.',
+            'disc_values':extract_individual_visual_disc(file.read_bytes())['values']}
 
 @APP.post('/api/admin/candidates/{cid}/materials')
 async def update_candidate_materials(request:Request,cid:str,
@@ -620,10 +670,22 @@ async def update_candidate_materials(request:Request,cid:str,
         raise HTTPException(422,'Selecione ao menos um documento.')
     folder=f'candidatos/{cid}'
     cv_path,cv_txt,_=await save_file(cv,folder)
-    disc_path,disc_txt,_=await save_file(disc,folder)
+    disc_path,disc_txt,_=await save_file(disc,folder,allow_visual_disc=True)
     link_path,li_txt,_=await save_file(linkedin_pdf,folder)
-    _,comp_txt,_=await save_file(disc_comparativo,folder)
-    disc_combined=((disc_txt if disc_path else old['disc_text'])+(('\n\nCOMPARATIVO DISC FORNECIDO:\n'+comp_txt) if comp_txt else '')).strip()[:120000]
+    _,comp_txt,_=await save_file(disc_comparativo,folder,allow_visual_disc=True)
+    previously=old['disc_text'] or ''
+    old_comparative=''
+    old_individual=previously
+    if 'TEXTO ORIGINAL DO COMPARATIVO:' in previously:
+        original=previously.split('TEXTO ORIGINAL DO COMPARATIVO:',1)[1]
+        if '\n\nLAUDO DISC INDIVIDUAL:' in original:
+            old_comparative,old_individual=original.split('\n\nLAUDO DISC INDIVIDUAL:',1)
+        else:
+            old_comparative=original
+            old_individual=''
+    disc_base=disc_txt if disc_path else old_individual.strip()
+    comparison=comp_txt if comp_txt else old_comparative.strip()
+    disc_combined=reconcile_disc_sources(disc_base,comparison) if comparison else disc_base[:120000]
     with conn() as db:
         db.execute("UPDATE candidates SET cv_text=?,disc_text=?,linkedin_text=?,cv_file=?,disc_file=?,linkedin_file=? WHERE id=?",
             (cv_txt[:120000] if cv_path else old['cv_text'],disc_combined,
@@ -980,7 +1042,7 @@ def texto_para_parecer(value):
 def pdf_doc(report:dict)->bytes:
     """Dossiê com matriz de evidências e status de homologação, sem decisão automática."""
     buff=io.BytesIO()
-    doc=SimpleDocTemplate(buff,pagesize=A4,rightMargin=1.8*cm,leftMargin=1.8*cm,topMargin=1.8*cm,bottomMargin=1.65*cm,title='Dossiê técnico de candidatura',author='Entrevistador Digital')
+    doc=SimpleDocTemplate(buff,pagesize=A4,rightMargin=1.8*cm,leftMargin=1.8*cm,topMargin=1.8*cm,bottomMargin=1.65*cm,title='Dossiê técnico de candidatura',author='Parecer profissional')
     navy=HexColor('#132B46');muted=HexColor('#52647B');light=HexColor('#F0F4F9')
     styles={
       'h1':ParagraphStyle('p7_h1',fontName=B,fontSize=15.3,leading=20,textColor=navy,spaceAfter=10),
@@ -1043,7 +1105,7 @@ def pdf_doc(report:dict)->bytes:
     el.extend([Spacer(1,10),HRFlowable(width='100%',thickness=.5,color=muted),t('Gerado: '+report.get('generated_at','')+' | '+report.get('review_status','Pendente de revisão humana'),'small')])
     def footer(canv,doc):
         canv.setFont(F,7.6);canv.setFillColor(muted)
-        canv.drawString(1.8*cm,1.08*cm,'Entrevistador Digital | Parecer técnico' )
+        canv.drawString(1.8*cm,1.08*cm,'Análise interna | Uso restrito' )
         canv.drawRightString(A4[0]-1.8*cm,1.08*cm,str(doc.page))
     doc.build(el,onFirstPage=footer,onLaterPages=footer)
     return buff.getvalue()

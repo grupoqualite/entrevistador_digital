@@ -73,9 +73,9 @@ def _client_text_for_criterion(c):
     name=_clean(c.get('criterion') or 'Requisito profissional')
     expl=_clean(c.get('auto_reason'))
     if not c.get('verified_excerpts'):
-        expl='Até o momento, não há exemplos suficientemente específicos de atuação que permitam concluir o nível de domínio desse requisito.'
+        expl='A documentação e as respostas disponíveis ainda não oferecem elementos suficientes para uma conclusão fundamentada sobre esse requisito.'
     elif not expl or re.search(r'aguardando|não (?:há|houve) nota|descartada|modelo não',expl,re.I):
-        expl='Há relatos relacionados à atividade, cuja profundidade deve ser conferida a partir das responsabilidades assumidas e dos resultados descritos.'
+        expl='Foram identificadas informações relacionadas ao requisito, que devem ser examinadas à luz das atividades efetivamente exercidas.'
     excerpts=[]
     for q in c.get('verified_excerpts',[])[:2]:
         excerpt=_clean(q.get('excerpt',''))
@@ -83,7 +83,7 @@ def _client_text_for_criterion(c):
             excerpt=excerpt.rstrip('.;')
             excerpts.append('“'+excerpt+'”')
     if excerpts:
-        expl+=' Como referência, consta o seguinte relato: '+(' e '.join(excerpts))+'.'
+        expl+=' A avaliação considera o relato/documento: '+(' e '.join(excerpts))+'.'
     if c.get('differential'):
         name+=' (diferencial)'
     return name, expl
@@ -107,12 +107,13 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
     Quando ausente, usa apenas critérios, justificativas e citações registradas.
     """
     payload=report.get('client_sections') or {}
-    brand=brand or os.environ.get('ENTREVISTADOR_MARCA','Entrevistador Digital')
+    brand=(brand if brand is not None else os.environ.get('ENTREVISTADOR_MARCA','')).strip()
+    if brand.casefold().startswith('entrevistador digital'):brand=''
     logo_path=Path(logo_path or os.environ.get('ENTREVISTADOR_LOGO_PDF') or str(Path(os.environ.get('ENTREVISTADOR_DATA',str(ROOT/'dados')))/'branding'/'logo.png'))
     buf=io.BytesIO()
     L,R,T,B=2.05*cm,2.05*cm,2.9*cm,2.0*cm
     doc=BaseDocTemplate(buf,pagesize=A4,leftMargin=L,rightMargin=R,topMargin=T,bottomMargin=B,
-                        title='Parecer de Entrevista',author=_clean(brand))
+                        title='Parecer de Entrevista',author=_clean(brand) if brand else 'Parecer profissional')
     frame=Frame(L,B,A4[0]-L-R,A4[1]-T-B,leftPadding=0,rightPadding=0,topPadding=0,bottomPadding=0)
 
     styles={
@@ -183,7 +184,7 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
             para('O material DISC apresenta os seguintes valores informados: '+', '.join(vals)+'. A interpretação desses indicadores deve ser contextualizada com o instrumento utilizado e com os comportamentos efetivamente observados na entrevista.','small')
         elif disc.get('status') and disc.get('status')!='não fornecido':
             sub('Leitura complementar do DISC')
-            para('Os indicadores comportamentais ainda precisam ser examinados quanto à escala e às dimensões do DISC. A interpretação deve ser confrontada com situações profissionais concretas.','small')
+            para('O material comportamental foi recebido, mas a extração disponível não permite descrever com segurança suas dimensões. A avaliação deve considerar o laudo original.','small')
     points(payload.get('validacoes_comportamentais',[]) if 'validacoes_comportamentais' in payload else _points(soft,3))
 
     title('3. PARECER DE RECOMENDAÇÃO')
@@ -209,11 +210,13 @@ def render_client_pdf(report:dict, *, logo_path:str|Path|None=None, brand:str|No
                 from PIL import Image as PILImage
                 image=PILImage.open(logo_path)
                 ratio=image.width/image.height
-                w=4.0*cm;h=w/ratio
-                canvas.drawImage(str(logo_path),L,A4[1]-1.43*cm-h/2,width=w,height=h,mask='auto',preserveAspectRatio=True)
-            except Exception:canvas.setFont(BOLD_NAME,10);canvas.setFillColor(NAVY);canvas.drawString(L,A4[1]-1.6*cm,_clean(brand))
-        else:
-            canvas.setFont(BOLD_NAME,10);canvas.setFillColor(NAVY);canvas.drawString(L,A4[1]-1.6*cm,_clean(brand))
+                w=min(4.7*cm, 1.25*cm*ratio)
+                h=w/ratio
+                # A logo fica no topo, no lugar da marca interna da plataforma.
+                canvas.drawImage(str(logo_path),L,A4[1]-1.60*cm-h/2,width=w,height=h,mask='auto',preserveAspectRatio=True)
+            except Exception:
+                # Sem imagem válida, o cabeçalho permanece neutro.
+                pass
         canvas.setStrokeColor(GOLD);canvas.setLineWidth(1.1)
         canvas.line(L,A4[1]-2.2*cm,A4[0]-R,A4[1]-2.2*cm)
         canvas.setStrokeColor(RULE);canvas.setLineWidth(.55)

@@ -255,7 +255,7 @@ def disc_summary(text:str)->dict:
     dims=[('D','Dominância'),('I','Influência'),('S','Estabilidade'),('C','Conformidade')]
     found=[]
     for _,label in dims:
-        m=re.search(rf'\b{label}\s*[:\-=]?\s*(\d{{1,3}}(?:[,.]\d+)?)\s*%?',text,re.I)
+        m=re.search(rf'\b{label}\s*(?:\([DISC]\))?\s*[:\-=]?\s*(\d{{1,3}}(?:[,.]\d+)?)\s*(?:/\s*7|%)?',text,re.I)
         if m:
             v=float(m.group(1).replace(',','.'))
             if 0<=v<=100:found.append({'dimension':label,'reported_value':v,'source':'DISC fornecido'})

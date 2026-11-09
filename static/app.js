@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.7.4-reviewed-evidence';
+const versaoEsperada = '9.7.5-disc-brand';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.7.4-reviewed-evidence'){
-      indicador.textContent='V9.7.4 · Análise integrada';
+    if(versao==='9.7.5-disc-brand'){
+      indicador.textContent='V9.7.5 · DISC Recrutei e parecer';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.7.4. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.7.5. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
@@ -117,6 +117,19 @@ $('materialsForm').onsubmit=async e=>{
  }catch(err){
   info('materialsMsg','Não foi possível confirmar o envio: '+err.message+'. Confira o status do candidato antes de tentar novamente.',true);
  }finally{if(sendButton)sendButton.disabled=false;}
+};
+
+$('reprocessDiscExisting').onclick=async()=>{
+ const cid=state.selectedCandidate;
+ if(!cid)return info('materialsMsg','Selecione um candidato primeiro.',true);
+ if(!confirm('A releitura do DISC substitui a minuta não aprovada e exigirá nova revisão. Deseja continuar?'))return;
+ const button=$('reprocessDiscExisting');button.disabled=true;
+ try{
+  const result=await call(`/api/admin/candidates/${encodeURIComponent(cid)}/reprocess-disc`,{method:'POST'});
+  await selectCandidate();
+  info('materialsMsg',(result.message||'DISC atualizado.')+' Dimensões reconhecidas: '+Object.entries(result.disc_values||{}).map(([k,v])=>k+v).join(', '));
+ }catch(err){info('materialsMsg',err.message,true)}
+ finally{button.disabled=false}
 };
 // Áudios históricos ficam acessíveis para transcrição manual, sem iniciar Whisper.
 async function refreshTranscriptionStatus(cid){
@@ -274,13 +287,21 @@ $('approveClientReport').onclick=async()=>{
 };
 $('downloadJson').onclick=()=>{if(state.selectedCandidate)location.href=`/api/admin/candidates/${state.selectedCandidate}/report.json`};
 
+function atualizarLogoPreview(){
+  const logo=$('logoPreview');
+  if(!logo)return;
+  logo.onload=()=>logo.style.display='block';
+  logo.onerror=()=>logo.style.display='none';
+  logo.src='/api/brand/logo?preview='+Date.now();
+}
+atualizarLogoPreview();
 $('saveLogo').onclick=async()=>{
  const file=$('logoUpload').files[0];if(!file)return $('logoMessage').textContent='Selecione uma imagem PNG ou JPG.';
- try{const data=new FormData();data.append('file',file);await call('/api/admin/brand/logo',{method:'POST',body:data});$('logoMessage').textContent='Logotipo salvo. Será exibido nos convites e pareceres.'}
+ try{const data=new FormData();data.append('file',file);await call('/api/admin/brand/logo',{method:'POST',body:data});$('logoMessage').textContent='Logotipo salvo para os pareceres em PDF. Não aparece nas entrevistas.';atualizarLogoPreview()}
  catch(e){$('logoMessage').textContent=e.message}
 };
 $('removeLogo').onclick=async()=>{
- try{await call('/api/admin/brand/logo',{method:'DELETE'});$('logoMessage').textContent='Logotipo removido. O cabeçalho voltará a ser neutro.'}
+ try{await call('/api/admin/brand/logo',{method:'DELETE'});$('logoMessage').textContent='Logotipo removido. Os pareceres terão cabeçalho neutro.';atualizarLogoPreview()}
  catch(e){$('logoMessage').textContent=e.message}
 };
 $('backup').onclick=()=>{location.href='/api/admin/backup.zip'};

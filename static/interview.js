@@ -3,11 +3,6 @@ const $ = id => document.getElementById(id);
 const token=decodeURIComponent(location.pathname.split('/').pop());
 let data=null,idx=0;
 const showErr=message=>{ $('interviewMsg').textContent=message||''; };
-window.addEventListener('DOMContentLoaded',()=>{
-  const logo=$('candidateLogo');
-  logo.onload=()=>{logo.style.display='block';$('fallbackBrand').style.display='none'};
-  logo.onerror=()=>{logo.style.display='none'};
-});
 async function send(url,options={}){
   const r=await fetch(url,options);let body;
   try{body=await r.json()}catch{body={detail:'Falha de comunicação.'}}
