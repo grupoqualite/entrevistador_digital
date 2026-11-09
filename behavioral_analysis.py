@@ -132,33 +132,48 @@ def _natural_list(items,max_len=3):
 
 
 def disc_paragraph(disc_text,report_disc,axes_seen):
-    """Sem escala ou interpretação validada, apenas contextualiza o DISC, não interpreta números."""
+    """Lê tendências explícitas e dimensões do laudo, sem diagnosticar pessoas."""
     observations=(report_disc or {}).get('observations') or []
     labels={'D':'Dominância','I':'Influência','S':'Estabilidade','C':'Conformidade'}
+    reverse={v.casefold():k for k,v in labels.items()}
     values={}
     for v in observations:
-        name=str(v.get('dimension','')).strip()
+        raw_name=str(v.get('dimension','')).strip()
+        key=raw_name.upper() if raw_name.upper() in labels else reverse.get(raw_name.casefold())
         raw=str(v.get('reported_value','')).strip()
-        if name.upper() in labels and raw and len(raw)<14:values[name.upper()]=raw
-    # Descarta trechos descritivos de baixa qualidade; não inventa tipo/perfil.
-    qual=[]
-    src=str(disc_text or '')[:7000]
-    for name,pat in [('estabilidade',r'(?i)\b(?:estabilidade|estável)\s+(?:alta|elevada|predominante)\b'),
-                     ('conformidade',r'(?i)\b(?:conformidade|cautela|detalhista)\s+(?:alta|elevada|predominante)\b'),
-                     ('influência',r'(?i)\b(?:influência|comunicativo)\s+(?:alta|elevada|predominante)\b')]:
-        if re.search(pat,src):qual.append(name)
-    if not observations and not qual:return None,'A interpretação do DISC requer conferência técnica das escalas e do conteúdo completo.' if src.strip() else None
-    axis_txt=_natural_list([x.lower() for x in axes_seen[:2]]) if axes_seen else 'condutas profissionais observáveis'
-    if qual:
-        return (f'O DISC descreve tendências ligadas a {_natural_list(qual)}. Essa leitura é complementar e deve ser '
-                f'confrontada com a experiência efetiva, especialmente em {axis_txt}. As tendências indicadas pelo instrumento '
-                'não demonstram, por si só, desempenho, autonomia ou reação a situações de pressão.'),None
-    if values:
+        if key and raw and len(raw)<14:values[key]=raw
+    raw=str(disc_text or '')
+    # O comparativo costuma ser anexado depois do laudo e não pode desaparecer
+    # quando a extração do PDF principal produz um texto extenso.
+    marker='COMPARATIVO DISC FORNECIDO:'
+    src=(raw[:7000]+'\n'+raw.split(marker,1)[-1][:5500]) if marker in raw else raw[:12000]
+    # Formatos compactos D3/I3/S7/C5 são mantidos como valores declarados,
+    # sem converter números em níveis psicológicos sem legenda do instrumento.
+    if not values:
+        for key,raw in re.findall(r'(?<![A-Za-z])([DISC])\s*[:=]?\s*(\d{1,2})(?!\d)',src,re.I):
+            if int(raw)<=10:values[key.upper()]=raw
+    qualitative=[]
+    for dimension in labels.values():
+        pattern=rf'(?i)\b{dimension}\s*[:=-]?\s*(?:mais\s+)?(elevad[ao]|alt[ao]|baix[ao]|predominante|moderad[ao])\b'
+        m=re.search(pattern,src)
+        if m:qualitative.append(f'{dimension.lower()} {m.group(1).lower()}')
+    # Um comparativo pode especificar leitura do instrumento, mas não autoriza
+    # afirmar comportamento individual comprovado.
+    profile_match=re.search(r'(?im)\bperfil(?:\s+comportamental|\s+predominante)?\s*[:=-]\s*([\wÀ-ÿ][\wÀ-ÿ -]{2,40})',src)
+    profile=compact(profile_match.group(1),45) if profile_match else ''
+    if not observations and not values and not qualitative and not profile:
+        return None,'A interpretação do DISC requer conferência técnica das escalas e do conteúdo completo.' if src.strip() else None
+    axes_txt=_natural_list([x.lower() for x in axes_seen[:2]]) if axes_seen else 'condutas profissionais observáveis'
+    parts=[]
+    if profile and len(profile.split())<=5:
+        parts.append(f'O relatório DISC descreve o estilo {profile}, classificação que deve ser lida conforme a metodologia do instrumento.')
+    if qualitative:
+        parts.append('O DISC descreve tendências associadas a '+_natural_list(qualitative,4)+'.')
+    elif values:
         ordered=', '.join(f'{labels[k]} ({k}: {values[k]})' for k in 'DISC' if k in values)
-        return (f'O DISC apresenta indicadores de {ordered}. Sem a interpretação completa da escala utilizada, '
-                'não seria adequado atribuir características estáveis a partir desses números. A avaliação comportamental '
-                f'permanece centrada nas condutas descritas, particularmente em {axis_txt}.'),None
-    return None,'Confirmar a leitura interpretativa do DISC com a escala do instrumento.'
+        parts.append(f'O DISC apresenta os indicadores {ordered}. A escala e as condições de aplicação precisam ser verificadas antes de qualquer interpretação qualitativa desses números.')
+    parts.append(f'Essas informações são complementares às condutas relatadas, em especial {axes_txt}, e não comprovam, isoladamente, autonomia, desempenho ou reação à pressão.')
+    return ' '.join(parts),None
 
 
 def build_behavioral(criteria,cv_text,linkedin_text,disc_text,disc_report):

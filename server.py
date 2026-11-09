@@ -62,7 +62,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.7.3',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Entrevistador Digital V9',version='9.7.4',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -227,6 +227,8 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
             # e a revisão humana, preenchendo apenas as seções externas que faltavam.
             provisional=draft_from_sources(old,row['cv_text'],row['linkedin_text'],row['disc_text'])
             old['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
+            old['draft_technical_trace']=provisional.get('evidencias_tecnicas_internas',[])
+            old['draft_source_audit']=provisional.get('auditoria_cruzamento',{})
             old['client_sections']={
                 'tecnicas':provisional['tecnicas'], 'comportamentais':provisional['comportamentais'],
                 'recomendacao':provisional['recomendacao'],
@@ -245,6 +247,8 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
     if missing_audio:report['pendencias'].append(f'{missing_audio} gravação(ões) histórica(s) sem transcrição; nenhum conteúdo dessas gravações foi avaliado.')
     provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
     report['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
+    report['draft_technical_trace']=provisional.get('evidencias_tecnicas_internas',[])
+    report['draft_source_audit']=provisional.get('auditoria_cruzamento',{})
     report['client_sections']={
         'tecnicas':provisional['tecnicas'],
         'comportamentais':provisional['comportamentais'],
@@ -346,7 +350,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.3-behavior-integrated','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.4-reviewed-evidence','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -810,6 +814,8 @@ def _do_analysis(cid:str,model:str,auto_transcribe:bool,job_id:str):
         try:
             provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
             report['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
+            report['draft_technical_trace']=provisional.get('evidencias_tecnicas_internas',[])
+            report['draft_source_audit']=provisional.get('auditoria_cruzamento',{})
             report['client_sections']={'tecnicas':provisional['tecnicas'],'comportamentais':provisional['comportamentais'],'recomendacao':provisional['recomendacao'],'validacoes_tecnicas':provisional['validacoes_tecnicas'],'validacoes_comportamentais':provisional['validacoes_comportamentais']}
             report['draft_mode']=provisional['modo']
             report['draft_pending']={'tecnicas':provisional['validacoes_tecnicas'],'comportamentais':provisional['validacoes_comportamentais']}
@@ -907,8 +913,26 @@ async def review_report(request:Request,cid:str):
         row=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
         if not row:raise HTTPException(404,'Gere primeiro uma análise.')
         report=json.loads(row['report_json'])
+        old_count=len(report.get('review_history') or [])
         try:report=update_review(report,body.get('decisions',{}),body.get('comment',''))
         except ValueError as e:raise HTTPException(422,str(e))
+        if len(report.get('review_history') or [])>old_count:
+            candidate=db.execute('SELECT cv_text,linkedin_text,disc_text FROM candidates WHERE id=?',(cid,)).fetchone()
+            if candidate:
+                updated=draft_from_sources(report,candidate['cv_text'],candidate['linkedin_text'],candidate['disc_text'])
+                report['draft_behavior_trace']=updated.get('evidencias_comportamentais_internas',[])
+                report['draft_technical_trace']=updated.get('evidencias_tecnicas_internas',[])
+                report['draft_source_audit']=updated.get('auditoria_cruzamento',{})
+                report['draft_pending']={'tecnicas':updated.get('validacoes_tecnicas',[]),'comportamentais':updated.get('validacoes_comportamentais',[])}
+                if report.get('client_edited_at') or report.get('client_approved_at'):
+                    # Nunca substituir texto revisado por uma regeneração silenciosa.
+                    # Se era aprovado, revogar aprovação até nova conferência.
+                    report['client_requires_revalidation']=True
+                    report['client_approved_at']=None
+                    report['client_approved_by']=None
+                else:
+                    report['client_sections']={k:updated[k] for k in ('tecnicas','comportamentais','recomendacao','validacoes_tecnicas','validacoes_comportamentais')}
+                    report['client_requires_revalidation']=False
         db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',(json.dumps(report,ensure_ascii=False),now(),cid))
     return report
 
@@ -1089,6 +1113,7 @@ async def save_client_report(request:Request,cid:str):
           'validacoes_tecnicas':previous.get('validacoes_tecnicas') or [],
           'validacoes_comportamentais':previous.get('validacoes_comportamentais') or []}
         report['client_edited_at']=now()
+        report['client_requires_revalidation']=False
         report['client_approved_at']=None
         report['client_approved_by']=None
         db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',(json.dumps(report,ensure_ascii=False),now(),cid))
@@ -1108,8 +1133,8 @@ async def approve_client_report(request:Request,cid:str):
         report=json.loads(row['report_json']);sections=report.get('client_sections') or {}
         if not sections.get('tecnicas') or not sections.get('comportamentais') or not str(sections.get('recomendacao') or '').strip():
             raise HTTPException(422,'Preencha e salve as três seções antes de aprovar.')
-        if not report.get('client_edited_at'):
-            raise HTTPException(409,'Revise e salve o texto do parecer antes de aprovar para o cliente.')
+        if not report.get('client_edited_at') or report.get('client_requires_revalidation'):
+            raise HTTPException(409,'Revise e salve novamente o parecer após a última alteração das avaliações.')
         report['client_approved_at']=now()
         report['client_approved_by']=actor['id']
         db.execute('UPDATE reports SET report_json=?,generated=? WHERE candidate_id=?',
@@ -1156,6 +1181,7 @@ async def approve_and_export_pdf(request:Request,cid:str):
             raise HTTPException(409,'A entrevista ainda não foi concluída.')
         report=json.loads(saved['report_json'])
         previous=report.get('client_sections') or {}
+        report['client_requires_revalidation']=False
         report['client_sections']={
             'tecnicas':tech,
             'comportamentais':behavior,

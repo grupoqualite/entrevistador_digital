@@ -438,7 +438,7 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
     if next_points:
         rec.append('Antes de uma indicação conclusiva, convém '+ '; '.join(x[0].lower()+x[1:] for x in next_points)+'.')
     rec.append('A decisão de recomendar o avanço deverá ser registrada pelo recrutador, após a avaliação das evidências e das condições efetivas da oportunidade.')
-    return {
+    output = {
       'tecnicas':technical[:7],
       'comportamentais':behavioral[:6],
       'validacoes_tecnicas':list(dict.fromkeys(gaps_tech))[:4],
@@ -448,3 +448,6 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
       'modo':'Minuta documental com cruzamento de informações profissionais e avaliação humana obrigatória',
       'aviso':'Conferência do recrutador obrigatória antes da aprovação.'
     }
+
+    from integrated_review import integrate_draft
+    return integrate_draft(output,report,cv_text,linkedin_text,disc_text)

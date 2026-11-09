@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.7.3-behavior-integrated';
+const versaoEsperada = '9.7.4-reviewed-evidence';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.7.3-behavior-integrated'){
-      indicador.textContent='V9.7.3 · Parecer integrado';
+    if(versao==='9.7.4-reviewed-evidence'){
+      indicador.textContent='V9.7.4 · Análise integrada';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.7.3. Confira o último commit implantado.';
+      indicador.title='O Render está executando versão diferente da V9.7.4. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
@@ -182,6 +182,18 @@ function drawReport(){
        <small class="hint">Status: ${escapeHTML(c.status||'Pendente')}</small>
    </article>`;
  }
+ const audit=r.draft_source_audit;
+ if(audit){
+  html+=`<details class="criterion"><summary><strong>Auditoria interna de fontes e revisões</strong></summary>
+   <p class="hint">Critérios revisados incorporados à redação: ${Number(audit.criterios_revisados||0)} (técnicos: ${Number(audit.tecnicos||0)}; comportamentais: ${Number(audit.comportamentais||0)}).</p>
+   <p class="hint">Currículo: ${audit.curriculo_disponivel?'disponível':'não identificado'} · DISC: ${audit.disc_disponivel?'disponível':'não identificado'} · LinkedIn: ${audit.linkedin_disponivel?'disponível':'não identificado'}.</p>
+   ${(audit.alertas||[]).map(w=>`<p class="hint"><strong>Atenção:</strong> ${escapeHTML(w)}</p>`).join('')}
+   ${(r.draft_technical_trace||[]).map(x=>`<p class="hint"><strong>Técnica · ${escapeHTML(x.criterio)}:</strong> ${escapeHTML(x.origem)} · ${escapeHTML(x.trecho||'Sem trecho localizado')}</p>`).join('')}
+   ${(r.draft_behavior_trace||[]).filter(x=>x.criterio).map(x=>`<p class="hint"><strong>Comportamental · ${escapeHTML(x.criterio)}:</strong> ${escapeHTML(x.origem)} · ${escapeHTML(x.trecho||'Sem trecho localizado')}</p>`).join('')}
+   <p class="hint">Este registro é exclusivo do painel e não é exibido no PDF do cliente.</p>
+  </details>`;
+ }
+ if(r.client_requires_revalidation){html+='<p class="origin"><strong>O parecer precisa de nova conferência.</strong> As notas foram alteradas depois de uma edição do texto. Reavalie as três seções e salve novamente antes de aprovar.</p>';}
  html+=`<h3>DISC</h3><p>${escapeHTML(r.disc?.status||'Não fornecido')}</p><p class="hint">A avaliação DISC não modifica a aderência técnica nem substitui evidências comportamentais.</p>
  <h3>Condições eliminatórias</h3><p class="hint">Devem ser verificadas separadamente da nota técnica.</p>
  ${(r.eliminatorios_sugeridos||[]).map(x=>`<p>${escapeHTML(x.requisito||'')} · ${escapeHTML(x.estado||'não confirmado')} · ${escapeHTML(x.fundamento||'')}</p>`).join('')}
@@ -203,7 +215,16 @@ function drawReport(){
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({decisions,comment:$('reviewerComment').value})
       });
-      drawReport();info('analysisMsg','Revisão registrada e histórico preservado. É possível exportar o dossiê.');
+      if(!state.report.client_requires_revalidation && state.report.client_sections){
+        const p=state.report.client_sections;
+        $('clientTech').value=(p.tecnicas||[]).join('\n\n');
+        $('clientBehavior').value=(p.comportamentais||[]).join('\n\n');
+        $('clientRecommendation').value=p.recomendacao||'';
+      }
+      drawReport();
+      info('analysisMsg',state.report.client_requires_revalidation
+        ? 'Notas salvas. O texto já editado foi preservado; revise e salve novamente o parecer antes de aprovar.'
+        : 'Notas salvas e texto do parecer atualizado com as avaliações ratificadas ou retificadas. Confira as três seções antes de aprovar.');
    }catch(err){info('analysisMsg',err.message,true)}
  };
 }
