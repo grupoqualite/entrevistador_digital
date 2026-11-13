@@ -314,19 +314,24 @@ def _natural_join(items):
     return ', '.join(items[:-1])+' e '+items[-1]
 
 
-def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text:str='')->dict:
+def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text:str='',career_narrative_text:str='')->dict:
     """Redige minuta profissional com análise interdisciplinar e pontos de validação.
 
     Sem motor semântico, esta análise é conservadora: regras localizam condutas
     descritas e não emitem julgamento de personalidade, score ou recomendação.
     O recrutador mantém poder de revisar, ratificar e definir recomendação.
     """
+    # Relato narrado é fonte complementar, não comprovação independente de experiência.
+    # Mantém identificador próprio na auditoria interna de fontes.
+    professional_context=(linkedin_text or '')
+    if career_narrative_text and career_narrative_text.strip():
+        professional_context += '\n\nRELATO PROFISSIONAL DO CANDIDATO (transcrição):\n'+career_narrative_text.strip()
     criteria=report.get('criteria') or []
     responsibilities=[c for c in criteria if c.get('category_key')=='responsabilidade']
     hard=[c for c in criteria if c.get('category_key')=='hard']
     tech=responsibilities+hard
     behavior=[c for c in criteria if c.get('category_key')=='soft']
-    cv=bool(str(cv_text or '').strip());li=bool(str(linkedin_text or '').strip())
+    cv=bool(str(cv_text or '').strip());li=bool(str(professional_context or '').strip())
     if not (cv or li or any(str(c.get('answer','')).strip() for c in criteria)):
         raise ValueError('Ainda não há evidências profissionais suficientes para redigir uma minuta. Confira os registros da candidatura.')
     role=clean(report.get('job_title') or 'a oportunidade',120)
@@ -334,7 +339,7 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
     soft_answers,_=unique_responses(behavior,10)
     gaps_tech,gaps_soft=identify_gaps(tech,behavior,t_answers,soft_answers,cv,li,bool(disc_text))
     technical=[]
-    career_areas=_doc_areas(cv_text,linkedin_text)
+    career_areas=_doc_areas(cv_text,professional_context)
     if career_areas:
         technical.append(
             f'A trajetória profissional reúne experiências relacionadas a {_natural_join(career_areas[:4])}. '
@@ -406,7 +411,7 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
     if repeated:
         gaps_tech.append('Aprofundar outras experiências profissionais, além do mesmo episódio usado para diferentes critérios.')
 
-    behavioral,pending_beh,behavior_trace=build_behavioral(criteria,cv_text,linkedin_text,disc_text,report.get('disc'))
+    behavioral,pending_beh,behavior_trace=build_behavioral(criteria,cv_text,professional_context,disc_text,report.get('disc'))
     # Registra o mapa de fontes somente no relatório interno; não será incluído no PDF de cliente.
     if not behavioral:
         behavioral=['Não há condutas observáveis suficientes para caracterizar com segurança as competências comportamentais exigidas.']
@@ -450,4 +455,4 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
     }
 
     from integrated_review import integrate_draft
-    return integrate_draft(output,report,cv_text,linkedin_text,disc_text)
+    return integrate_draft(output,report,cv_text,professional_context,disc_text)

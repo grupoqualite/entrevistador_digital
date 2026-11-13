@@ -63,7 +63,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Entrevistador Digital V9',version='9.7.5',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Qualité Entrevistar Digital',version='9.7.5',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -115,6 +115,8 @@ with conn() as db:
     existing={r['name'] for r in db.execute('PRAGMA table_info(candidates)').fetchall()}
     if 'invite_expires_at' not in existing:db.execute('ALTER TABLE candidates ADD COLUMN invite_expires_at TEXT')
     if 'revoked_at' not in existing:db.execute('ALTER TABLE candidates ADD COLUMN revoked_at TEXT')
+    if 'career_narrative_text' not in existing:db.execute("ALTER TABLE candidates ADD COLUMN career_narrative_text TEXT NOT NULL DEFAULT ''")
+    if 'career_narrative_file' not in existing:db.execute("ALTER TABLE candidates ADD COLUMN career_narrative_file TEXT NOT NULL DEFAULT ''")
     db.execute("UPDATE analysis_jobs SET status='failed',error='Análise interrompida por reinicialização; execute novamente.' WHERE status IN ('queued','running')")
     db.execute("UPDATE transcription_jobs SET status='interrompido',error='Servidor reiniciado durante a transcrição. Reprocesse os áudios.' WHERE status IN ('queued','running')")
     if not PRODUCTION and not db.execute('SELECT 1 FROM vacancies LIMIT 1').fetchone():
@@ -226,7 +228,7 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
         if old.get('review_history'):
             # Recuperação de backups de versões anteriores: conservar integralmente as notas
             # e a revisão humana, preenchendo apenas as seções externas que faltavam.
-            provisional=draft_from_sources(old,row['cv_text'],row['linkedin_text'],row['disc_text'])
+            provisional=draft_from_sources(old,row['cv_text'],row['linkedin_text'],row['disc_text'],row['career_narrative_text'])
             old['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
             old['draft_technical_trace']=provisional.get('evidencias_tecnicas_internas',[])
             old['draft_source_audit']=provisional.get('auditoria_cruzamento',{})
@@ -246,7 +248,7 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
     report=prepare_report(questions,answers,c['cv_text'],c['disc_text'],c['linkedin_text'],c['linkedin_url'],v['title'],c['name'],v['description'])
     missing_audio=sum(1 for x in answers.values() if x.get('audio_file') and not x.get('transcript','').strip())
     if missing_audio:report['pendencias'].append(f'{missing_audio} gravação(ões) histórica(s) sem transcrição; nenhum conteúdo dessas gravações foi avaliado.')
-    provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+    provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'],c['career_narrative_text'])
     report['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
     report['draft_technical_trace']=provisional.get('evidencias_tecnicas_internas',[])
     report['draft_source_audit']=provisional.get('auditoria_cruzamento',{})
@@ -370,7 +372,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.5-disc-brand','build':'disc-individual-visual-logo-consolidado','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.5-disc-brand','build':'qualite-situacional-relato-profissional','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -602,7 +604,7 @@ def candidate_list(request:Request):
         return [dict(r) for r in db.execute('SELECT c.id,c.name,c.status,c.created,c.token,v.title AS vacancy FROM candidates c JOIN vacancies v ON v.id=c.vacancy_id ORDER BY c.created DESC').fetchall()]
 
 @APP.post('/api/admin/candidates')
-async def create_candidate(request:Request,vacancy_id:str=Form(...),name:str=Form(...),linkedin_url:str=Form(''),linkedin_text:str=Form(''),cv:Optional[UploadFile]=File(None),disc:Optional[UploadFile]=File(None),linkedin_pdf:Optional[UploadFile]=File(None),disc_comparativo:Optional[UploadFile]=File(None)):
+async def create_candidate(request:Request,vacancy_id:str=Form(...),name:str=Form(...),linkedin_url:str=Form(''),linkedin_text:str=Form(''),cv:Optional[UploadFile]=File(None),disc:Optional[UploadFile]=File(None),linkedin_pdf:Optional[UploadFile]=File(None),disc_comparativo:Optional[UploadFile]=File(None),career_narrative:Optional[UploadFile]=File(None),career_narrative_text:str=Form('')):
     must_admin(request);get_vacancy(vacancy_id)
     name=name.strip()[:150]
     if not name:raise HTTPException(422,'Informe um nome.')
@@ -613,14 +615,17 @@ async def create_candidate(request:Request,vacancy_id:str=Form(...),name:str=For
     li_path,li_extracted,_=await save_file(linkedin_pdf,folder)
     comp_path,comp_text,_=await save_file(disc_comparativo,folder,allow_visual_disc=True)
     if comp_text:disc_text=reconcile_disc_sources(disc_text,comp_text)
+    narrative_path,narrative_extracted,_=await save_file(career_narrative,folder)
+    narrative='\n'.join(x.strip() for x in (career_narrative_text,narrative_extracted) if x and x.strip())[:80000]
     linkedin_text=(linkedin_text.strip()+'\n'+li_extracted.strip()).strip()[:100000]
     token=secrets.token_urlsafe(24)
     with conn() as db:
         db.execute('''INSERT INTO candidates(id,vacancy_id,name,linkedin_url,cv_text,disc_text,linkedin_text,cv_file,disc_file,linkedin_file,token,status,created,invite_expires_at,revoked_at)
                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)''',
                    (cid,vacancy_id,name,linkedin_url[:700],cv_text[:120000],disc_text[:120000],linkedin_text,cv_path,disc_path,li_path,token,'convidado',now(),(datetime.now()+timedelta(days=14)).isoformat(timespec='seconds')))
+        db.execute('UPDATE candidates SET career_narrative_text=?,career_narrative_file=? WHERE id=?',(narrative,narrative_path,cid))
     base=os.environ.get('ENTREVISTADOR_PUBLIC_URL','').strip().rstrip('/') or str(request.base_url).rstrip('/')
-    return {'id':cid,'name':name,'invite':base+'/entrevista/'+token,'source_status':{'curriculo':bool(cv_text),'disc':bool(disc_text),'linkedin':bool(linkedin_text)}}
+    return {'id':cid,'name':name,'invite':base+'/entrevista/'+token,'source_status':{'curriculo':bool(cv_text),'disc':bool(disc_text),'linkedin':bool(linkedin_text),'relato_profissional':bool(narrative)}}
 
 
 @APP.post('/api/admin/candidates/{cid}/reprocess-disc')
@@ -695,6 +700,35 @@ async def update_candidate_materials(request:Request,cid:str,
     return {'ok':True,'message':'Fontes atualizadas. Gere novamente a análise antes de preparar o dossiê.',
             'extraido':{'curriculo':len(cv_txt),'disc':len(disc_combined),'linkedin':len(li_txt)}}
 
+@APP.post('/api/admin/candidates/{cid}/career-narrative')
+async def update_career_narrative(request:Request,cid:str,career_narrative:Optional[UploadFile]=File(None),career_narrative_text:str=Form('')):
+    """Recebe transcrição pronta, não grava nem transcreve áudio."""
+    actor=must_admin(request)
+    with conn() as db:
+        row=db.execute('SELECT * FROM candidates WHERE id=?',(cid,)).fetchone()
+        if not row:raise HTTPException(404,'Candidato não encontrado.')
+        prev=db.execute('SELECT report_json FROM reports WHERE candidate_id=?',(cid,)).fetchone()
+        if prev:
+            report=json.loads(prev['report_json'])
+            if report.get('client_approved_at') or report.get('client_edited_at') or report.get('reviewed_count',0):
+                raise HTTPException(409,'Parecer já revisado ou aprovado. Preserve-o antes de substituir fontes.')
+    if career_narrative and career_narrative.filename:
+        if Path(career_narrative.filename).suffix.lower() not in ('.pdf','.docx','.txt'):
+            raise HTTPException(422,'A transcrição deve estar em PDF, DOCX ou TXT; não envie o áudio original.')
+    stored,extracted,_=await save_file(career_narrative,f'candidatos/{cid}')
+    content='\n'.join(x.strip() for x in (career_narrative_text,extracted) if x and x.strip())[:80000]
+    if len(content)<30:raise HTTPException(422,'Informe uma transcrição de pelo menos 30 caracteres.')
+    with conn() as db:
+        db.execute('UPDATE candidates SET career_narrative_text=?,career_narrative_file=? WHERE id=?',
+                   (content,stored or row['career_narrative_file'],cid))
+        db.execute('DELETE FROM reports WHERE candidate_id=?',(cid,))
+        record_audit(db,actor,'atualizar_relato_profissional',cid)
+    if row['status']=='concluido':
+        try:prepare_documental_dossier(cid,overwrite=True)
+        except ValueError:pass
+    return {'ok':True,'message':'Relato profissional incorporado às fontes. Revise a nova minuta.',
+            'caracteres':len(content),'arquivo':bool(stored)}
+
 @APP.get('/api/admin/candidates/{cid}')
 def candidate_detail(request:Request,cid:str):
     must_admin(request)
@@ -708,7 +742,7 @@ def candidate_detail(request:Request,cid:str):
     with conn() as db:
         tr=db.execute('SELECT id,status,progress,total,error,updated_at FROM transcription_jobs WHERE candidate_id=? ORDER BY created_at DESC LIMIT 1',(cid,)).fetchone()
     base=os.environ.get('ENTREVISTADOR_PUBLIC_URL','').strip().rstrip('/') or str(request.base_url).rstrip('/')
-    return {'transcription_job':dict(tr) if tr else None,'id':cid,'name':c['name'],'status':c['status'],'linkedin_url':c['linkedin_url'],'cv_text':c['cv_text'][:30000], 'disc_text':c['disc_text'][:20000], 'linkedin_text':c['linkedin_text'][:20000], 'vacancy':v['title'],'questions':q,'answers':answers,'invite':base+'/entrevista/'+c['token'],'report':json.loads(row['report_json']) if row else None}
+    return {'transcription_job':dict(tr) if tr else None,'id':cid,'name':c['name'],'status':c['status'],'linkedin_url':c['linkedin_url'],'cv_text':c['cv_text'][:30000], 'disc_text':c['disc_text'][:20000], 'linkedin_text':c['linkedin_text'][:20000], 'career_narrative_text':c['career_narrative_text'][:30000], 'vacancy':v['title'],'questions':q,'answers':answers,'invite':base+'/entrevista/'+c['token'],'report':json.loads(row['report_json']) if row else None}
 
 @APP.get('/api/invites/{token}')
 def invite_data(token:str):
@@ -874,7 +908,7 @@ def _do_analysis(cid:str,model:str,auto_transcribe:bool,job_id:str):
         # Redação documental preliminar: não gera nota e não aprova ninguém.
         # Pode ser revisada mesmo no plano Render gratuito sem Ollama.
         try:
-            provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+            provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'],c['career_narrative_text'])
             report['draft_behavior_trace']=provisional.get('evidencias_comportamentais_internas',[])
             report['draft_technical_trace']=provisional.get('evidencias_tecnicas_internas',[])
             report['draft_source_audit']=provisional.get('auditoria_cruzamento',{})
@@ -981,7 +1015,7 @@ async def review_report(request:Request,cid:str):
         if len(report.get('review_history') or [])>old_count:
             candidate=db.execute('SELECT cv_text,linkedin_text,disc_text FROM candidates WHERE id=?',(cid,)).fetchone()
             if candidate:
-                updated=draft_from_sources(report,candidate['cv_text'],candidate['linkedin_text'],candidate['disc_text'])
+                updated=draft_from_sources(report,candidate['cv_text'],candidate['linkedin_text'],candidate['disc_text'],candidate['career_narrative_text'])
                 report['draft_behavior_trace']=updated.get('evidencias_comportamentais_internas',[])
                 report['draft_technical_trace']=updated.get('evidencias_tecnicas_internas',[])
                 report['draft_source_audit']=updated.get('auditoria_cruzamento',{})
@@ -1129,7 +1163,7 @@ async def generate_client_draft(request:Request,cid:str):
         except Exception as ex:
             raise HTTPException(503,'Falha no rascunho contextual. Tente o modo documental ou revise a configuração: '+str(ex)[:150])
     try:
-        return draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'])
+        return draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'],c['career_narrative_text'])
     except ValueError as ex:
         raise HTTPException(422,str(ex))
 
@@ -1462,6 +1496,12 @@ async def restore_backup(request:Request,file:UploadFile=File(...),confirmation:
                     with sqlite3.connect(DB) as old,sqlite3.connect(previous_db) as dest:
                         old.backup(dest)
                     with sqlite3.connect(staged_db) as new_db:
+                        # Migração compatível com backups produzidos antes da transcrição complementar.
+                        restored_columns={r[1] for r in new_db.execute('PRAGMA table_info(candidates)').fetchall()}
+                        if 'career_narrative_text' not in restored_columns:
+                            new_db.execute("ALTER TABLE candidates ADD COLUMN career_narrative_text TEXT NOT NULL DEFAULT ''")
+                        if 'career_narrative_file' not in restored_columns:
+                            new_db.execute("ALTER TABLE candidates ADD COLUMN career_narrative_file TEXT NOT NULL DEFAULT ''")
                         new_db.execute('DELETE FROM admin_sessions')
                         new_db.execute("UPDATE analysis_jobs SET status='failed',error='Job interrompido pela restauração.' WHERE status IN ('queued','running')")
                         new_db.execute("UPDATE transcription_jobs SET status='interrompido',error='Transcrição interrompida pela restauração.' WHERE status IN ('queued','running')")
@@ -1506,7 +1546,7 @@ def download_json(request:Request,cid:str):
 
 if __name__=='__main__':
     import uvicorn
-    print('\nEntrevistador Digital V7: http://127.0.0.1:8765')
+    print('\nQualité Entrevistar Digital: http://127.0.0.1:8765')
     print('Chave de acesso em:',ADMIN_KEY_FILE)
     print('Armazenamento de teste em:',DATA)
     uvicorn.run(APP,host=os.environ.get('ENTREVISTADOR_HOST','127.0.0.1'),port=int(os.environ.get('ENTREVISTADOR_PORT','8765')))

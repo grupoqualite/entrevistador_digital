@@ -156,6 +156,24 @@ def _pattern(entry):
         if re.search(patt,phrase,re.I):matches.append((focus,q,evidence))
     return next((m for p in prefer for m in matches if m[0]==p),matches[0] if matches else None)
 
+SITUATIONAL_EQUIVALENCE = (
+    'Caso não tenha vivido exatamente essa situação, apresente a experiência profissional mais semelhante, '
+    'explique o que é comparável e quais diferenças existem. Não crie uma experiência que não aconteceu.'
+)
+
+def situational_question(question:str, category:str)->str:
+    """Pede evidência real ou transferível, sem exigir vivência idêntica.
+
+    Mantém o requisito da vaga e não introduz competências não previstas.
+    """
+    q=clean(question)
+    if category=='logistica':return q
+    if q.lower().startswith(('quais critérios','que informações e critérios','quais controles','quais indicadores','qual foi o problema técnico')):
+        q='Considere uma situação real do seu trabalho relacionada a esse requisito. '+q
+    if 'não tenha vivido exatamente' not in q.lower() and 'caso não tenha vivido' not in q.lower():
+        q=q.rstrip(' .')+' '+SITUATIONAL_EQUIVALENCE
+    return q
+
 def make_question(entry:dict,cv:str='',idx:int=0)->dict:
     origin=entry['origin'];cat=entry['category'];detected=_pattern(entry)
     if detected:
@@ -206,6 +224,7 @@ def make_question(entry:dict,cv:str='',idx:int=0)->dict:
         }
         question=technical_prompts[focus]
         evidence='Aplicação dos métodos, ferramentas e controles ligados ao requisito.'
+    question=situational_question(question,cat)
     common=tokens(origin)&tokens(cv)
     cv_observation=''
     if cv.strip() and cat!='logistica':
