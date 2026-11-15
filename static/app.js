@@ -1,6 +1,6 @@
 (() => {
 // Verificação de compatibilidade: nunca tentar autenticar com HTML e JS de versões diferentes.
-const versaoEsperada = '9.7.5-disc-brand';
+const versaoEsperada = '9.7.7-parecer-qualite';
 const versaoPagina = document.querySelector('meta[name="ed-ui-version"]')?.content;
 const camposObrigatorios = ['loginForm','identifier','pass','authMsg','currentAccount','changePasswordScreen','passwordChangeForm','usersTab','regenerateQuestions','createUserForm','backupsTab','openRestore','restoreForm','restoreFile','restoreConfirmation'];
 const ausentes = camposObrigatorios.filter(id => !document.getElementById(id));
@@ -23,12 +23,12 @@ async function atualizarVersaoDoPainel(){
     const diagnostico=await resposta.json();
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
-    if(versao==='9.7.5-disc-brand'){
-      indicador.textContent='V9.7.5 · Qualité Entrevistar Digital';
+    if(versao==='9.7.7-parecer-qualite'){
+      indicador.textContent='V9.7.7 · Qualité Entrevistar Digital';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
-      indicador.title='O Render está executando versão diferente da V9.7.5. Confira o último commit implantado.';
+      indicador.title='O Render está executando uma versão diferente da versão esperada. Confira o último commit implantado.';
       indicador.style.color='#a33a2b';
     }
   }catch(erro){
