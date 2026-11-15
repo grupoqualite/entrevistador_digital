@@ -31,3 +31,20 @@ input,textarea,select{border-color:#d8d3b3;color:#282713}.origin,.questionPrompt
  body:has(#workspace:not(.hidden)) .tabs button.selected{background:#6a642d;color:white;border-color:#918742}
 }
 @media(max-width:860px){.sidebar-brand{display:none}.tabs button.selected{background:#4e4b1d;border-color:#4e4b1d;color:white}.top{padding:12px 14px}.top .brand{font-size:15px}}
+
+/* Marca institucional fixa no sistema. Não interfere no logotipo personalizável do PDF. */
+.top{background:#f7f5e8;color:#323023;border-bottom:1px solid #d9d6bd}
+.top .brand{display:flex;align-items:center;gap:16px}
+.brand-logo{display:block;width:200px;max-width:37vw;height:auto;object-fit:contain}
+.brand-title{display:flex;flex-direction:column;color:#312f20;font-size:16px;line-height:1.4}
+.brand-title strong{color:#3c3823;font-size:17px}
+.brand-title small{color:#6b654c;font-size:11px;opacity:1}
+.top .microtag{color:#625d41;border-color:#bbb491}
+.top .textbtn{color:#343123}
+.sidebar-brand{flex-direction:column;align-items:stretch;gap:9px;padding-top:17px}
+.sidebar-brand span{padding:0 4px}
+.sidebar-brand strong{font-size:15px}
+.sidebar-logo{display:block;background:#f4f0db;border-radius:10px;padding:12px 10px;width:100%;max-height:94px;object-fit:contain}
+.source-coverage{font-size:12px;color:#55513b;margin:7px 0 10px;line-height:1.55}
+@media(max-width:860px){.brand-logo{width:145px;max-width:38vw}.brand-title strong{font-size:14px}.brand-title small{display:none}}
+@media(max-width:420px){.top{gap:6px}.brand-logo{width:114px}.brand-title strong{font-size:12px}}

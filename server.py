@@ -372,7 +372,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.5-disc-brand','build':'qualite-situacional-relato-profissional','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.7-parecer-qualite','build':'qualite-parecer-evidencias-5-fontes','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -1013,7 +1013,7 @@ async def review_report(request:Request,cid:str):
         try:report=update_review(report,body.get('decisions',{}),body.get('comment',''))
         except ValueError as e:raise HTTPException(422,str(e))
         if len(report.get('review_history') or [])>old_count:
-            candidate=db.execute('SELECT cv_text,linkedin_text,disc_text FROM candidates WHERE id=?',(cid,)).fetchone()
+            candidate=db.execute('SELECT cv_text,linkedin_text,disc_text,career_narrative_text FROM candidates WHERE id=?',(cid,)).fetchone()
             if candidate:
                 updated=draft_from_sources(report,candidate['cv_text'],candidate['linkedin_text'],candidate['disc_text'],candidate['career_narrative_text'])
                 report['draft_behavior_trace']=updated.get('evidencias_comportamentais_internas',[])

@@ -1,0 +1,17 @@
+QUALITE ENTREVISTAR DIGITAL - ATUALIZACAO 9.7.7
+
+Base de origem: 9.7.5.
+Este ZIP e o pacote COMPLETO de codigo para upload manual no GitHub.
+
+1. Faca backup do sistema atual antes do deploy.
+2. Extraia o ZIP e copie o conteudo da raiz para a raiz do repositorio conectado ao Render.
+3. Sobrescreva os arquivos existentes e inclua narrative_upgrade.py e static/qualite-marca-horizontal.png.
+4. Commit e push na branch de producao.
+5. No Render: Manual Deploy > Deploy latest commit.
+6. Verifique /api/health: version=9.7.7-parecer-qualite.
+7. Teste todo o fluxo com dados ficticios e confira o logo especifico do parecer.
+
+NAO alterar as variaveis de ambiente atuais sem necessidade.
+NAO excluir arquivos de banco ou anexos ao atualizar o codigo.
+
+Mais detalhes: ATUALIZACAO_QUALITE_V9_7_7.md

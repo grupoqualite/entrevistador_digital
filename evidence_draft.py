@@ -455,4 +455,6 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
     }
 
     from integrated_review import integrate_draft
-    return integrate_draft(output,report,cv_text,professional_context,disc_text)
+    from narrative_upgrade import enhance
+    reviewed = integrate_draft(output,report,cv_text,professional_context,disc_text)
+    return enhance(reviewed, report, cv_text, linkedin_text, disc_text, career_narrative_text)
