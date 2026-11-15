@@ -76,14 +76,10 @@ def _client_text_for_criterion(c):
         expl='A documentação e as respostas disponíveis ainda não oferecem elementos suficientes para uma conclusão fundamentada sobre esse requisito.'
     elif not expl or re.search(r'aguardando|não (?:há|houve) nota|descartada|modelo não',expl,re.I):
         expl='Foram identificadas informações relacionadas ao requisito, que devem ser examinadas à luz das atividades efetivamente exercidas.'
-    excerpts=[]
-    for q in c.get('verified_excerpts',[])[:2]:
-        excerpt=_clean(q.get('excerpt',''))
-        if excerpt:
-            excerpt=excerpt.rstrip('.;')
-            excerpts.append('“'+excerpt+'”')
-    if excerpts:
-        expl+=' A avaliação considera o relato/documento: '+(' e '.join(excerpts))+'.'
+    # As citações são de uso exclusivamente interno. O parecer do cliente
+    # apresenta interpretação e limites, nunca reproduz a resposta literal.
+    if c.get('auto_score') is not None and c.get('review_decision') in ('ratificar','retificar'):
+        expl+=' O critério foi confrontado com a revisão profissional realizada.'
     if c.get('differential'):
         name+=' (diferencial)'
     return name, expl

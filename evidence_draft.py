@@ -457,4 +457,11 @@ def draft_from_sources(report:dict,cv_text:str='',linkedin_text:str='',disc_text
     from integrated_review import integrate_draft
     from narrative_upgrade import enhance
     reviewed = integrate_draft(output,report,cv_text,professional_context,disc_text)
-    return enhance(reviewed, report, cv_text, linkedin_text, disc_text, career_narrative_text)
+    internal = enhance(reviewed, report, cv_text, linkedin_text, disc_text, career_narrative_text)
+    # Somente as evidências internas têm trechos literais. A minuta do cliente
+    # recebe redação analítica em português, sem colagens da entrevista.
+    from editorial_qualite import compose
+    editorial = compose(report, cv_text, linkedin_text, disc_text, career_narrative_text)
+    internal.update(editorial)
+    internal['modo'] = 'Síntese analítica das fontes, com revisão humana obrigatória'
+    return internal

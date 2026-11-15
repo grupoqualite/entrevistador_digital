@@ -27,6 +27,7 @@ from technical_engine import prepare_report, update_review, metrics, RUBRIC
 from evaluator_v9 import evaluate_v9
 from draft_v9 import draft_sections
 from evidence_draft import draft_from_sources
+from documentary_preassessment import inspect as inspect_documentary
 from question_upgrade_v9 import improve_questions
 from client_report import render_client_pdf
 from recrutei_disc import enrich_disc_comparative, enrich_individual_visual_disc, extract_individual_visual_disc, reconcile_disc_sources
@@ -63,7 +64,7 @@ else:
 ADMIN_HASH=hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
 LOGIN_TRACKER={}
 POOL=ThreadPoolExecutor(max_workers=1,thread_name_prefix='edv9-job')
-APP=FastAPI(title='Qualité Entrevistar Digital',version='9.7.5',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
+APP=FastAPI(title='Qualité Entrevistar Digital',version='9.7.7.2',docs_url=None if PRODUCTION else '/docs',redoc_url=None if PRODUCTION else '/redoc')
 APP.mount('/static',StaticFiles(directory=str(BASE/'static')),name='static')
 
 @contextmanager
@@ -246,6 +247,7 @@ def prepare_documental_dossier(cid:str,overwrite:bool=False):
     c=dict(row);v=get_vacancy(c['vacancy_id']);questions=json.loads(v['questions_json'])
     answers=get_answers(cid)
     report=prepare_report(questions,answers,c['cv_text'],c['disc_text'],c['linkedin_text'],c['linkedin_url'],v['title'],c['name'],v['description'])
+    report=inspect_documentary(report,c['cv_text'],c['linkedin_text'],c['career_narrative_text'],c['disc_text'])
     missing_audio=sum(1 for x in answers.values() if x.get('audio_file') and not x.get('transcript','').strip())
     if missing_audio:report['pendencias'].append(f'{missing_audio} gravação(ões) histórica(s) sem transcrição; nenhum conteúdo dessas gravações foi avaliado.')
     provisional=draft_from_sources(report,c['cv_text'],c['linkedin_text'],c['disc_text'],c['career_narrative_text'])
@@ -372,7 +374,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.7-parecer-qualite','build':'qualite-parecer-evidencias-5-fontes','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'manual - sem Ollama neste plano','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.7-parecer-qualite','build':'qualite-parecer-analitico-confronto-9772','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'contextual apenas com modelo local configurado; triagem documental sem nota disponivel','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -898,13 +900,16 @@ def _do_analysis(cid:str,model:str,auto_transcribe:bool,job_id:str):
         transcribed=transcribe_pending_audio(cid) if auto_transcribe else 0
         answers=get_answers(cid)
         report=prepare_report(questions,answers,c['cv_text'],c['disc_text'],c['linkedin_text'],c['linkedin_url'],v['title'],c['name'],v['description'])
+        report=inspect_documentary(report,c['cv_text'],c['linkedin_text'],c['career_narrative_text'],c['disc_text'])
         def progress(done,total):
             with conn() as db:db.execute('UPDATE analysis_jobs SET progress=?,total=?,updated_at=? WHERE id=?',(done,total,now(),job_id))
         if model:
             report=evaluate_v9(report,c['cv_text'],c['linkedin_text'],v['description'],model,
-                              os.environ.get('ENTREVISTADOR_OLLAMA_URL','http://127.0.0.1:11434'),progress=progress)
+                              os.environ.get('ENTREVISTADOR_OLLAMA_URL','http://127.0.0.1:11434'),progress=progress,career_narrative=c['career_narrative_text'],disc=c['disc_text'])
         else:
-            report['pendencias'].append('Modelo local não configurado: nenhuma nota técnica preliminar atribuída.')
+            report['analysis_mode']='Avaliação da IA indisponível neste ambiente. Documentos organizados para análise humana, sem pontuação automática.'
+            report['model_review']={'engine':'indisponivel','reason':'Modelo local não configurado','criteria_evaluated':0,'criteria_total':len(report.get('criteria') or [])}
+            report['pendencias'].append('Avaliação da IA não executada: modelo local não configurado. Não interpretar itens sem nota como avaliação negativa.')
         # Redação documental preliminar: não gera nota e não aprova ninguém.
         # Pode ser revisada mesmo no plano Render gratuito sem Ollama.
         try:
@@ -1090,10 +1095,11 @@ def pdf_doc(report:dict)->bytes:
     def val(x):return 'Não calculado' if x is None else str(x)+'%'
     el=[t('DOSSIÊ TÉCNICO DE CANDIDATURA','h1'),t('Avaliação profissional fundamentada em documentos e entrevista. Sujeita à revisão do recrutador.','small'),
         t('Candidato: '+report.get('candidate','')),t('Vaga: '+report.get('job_title','')),
-        t('Situação: '+report.get('review_status','Pendente'))]
-    data=[['INDICADOR','VALOR','COBERTURA'],['Aderência técnica evidenciada',val(report.get('technical_percent')),val(report.get('technical_coverage'))],
-          ['Soft skills evidenciadas',val(report.get('behavioral_percent')),val(report.get('behavioral_coverage'))],
-          ['Aderência profissional global',val(report.get('adherence_percent')),val(report.get('coverage_percent'))]]
+        t('Situação: '+report.get('review_status','Pendente')),
+        t('Estado da avaliação preliminar: '+str(report.get('analysis_mode','Não informada')),'small')]
+    data=[['INDICADOR','VALOR','COBERTURA'],['Aderência técnica evidenciada',val(report.get('technical_percent')),val(report.get('technical_coverage')) if report.get('technical_percent') is not None else 'Não calculada'],
+          ['Soft skills evidenciadas',val(report.get('behavioral_percent')),val(report.get('behavioral_coverage')) if report.get('behavioral_percent') is not None else 'Não calculada'],
+          ['Aderência profissional global',val(report.get('adherence_percent')),val(report.get('coverage_percent')) if report.get('adherence_percent') is not None else 'Não calculada']]
     tbl=Table([[t(x,'label' if i==0 else 'small') for x in row] for i,row in enumerate(data)], colWidths=[8*cm,3.3*cm,3.25*cm],hAlign='LEFT')
     tbl.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),light),('LINEBELOW',(0,0),(-1,-1),.3,HexColor('#D9E0E8')),
         ('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),6)]))
@@ -1105,7 +1111,10 @@ def pdf_doc(report:dict)->bytes:
         head=f"{c['id']} | {c.get('category','')} | Peso {c['weight']} ({str(c.get('weight_percent'))+'%' if c.get('weight_percent') is not None else 'diferencial'}) | Nota preliminar: {str(auto)+'/4' if auto is not None else 'sem nota'} | Pontuação atual: {str(effective)+'/4' if effective is not None else 'sem nota'}"
         block=[t(head,'label'),t('Requisito: '+c.get('criterion','')),t('Origem na descrição: '+c.get('source_jd',''),'small')]
         if c.get('differential'):block.append(t('Diferencial, não eliminatório.','small'))
+        if c.get('preliminary_documentary_review'):
+            block.append(t('Triagem documental (sem nota): '+c['preliminary_documentary_review']))
         if c.get('auto_reason'):block.append(t('Fundamentação preliminar: '+c['auto_reason']))
+        block.append(t('Confronto das avaliações: '+c.get('comparison_status','Pendente de revisão humana'),'small'))
         quotes=c.get('verified_excerpts',[])
         for q in quotes[:4]:block.append(t('Trecho literal ('+q.get('source','')+'): '+q.get('excerpt',''),'small'))
         if c.get('review_decision') in ('ratificar','retificar'):
@@ -1180,6 +1189,10 @@ def verify_external_narrative(texts):
         r'(?i)\b(?:perfil profissional exportado|texto extra[ií]do|documento importado|arquivo anexado|no curr[ií]culo importado)\b',
         r'(?i)\b(?:o candidato declarou)\s*[:：]\s*[“"]',
     )
+    # No documento externo devem constar conclusões analíticas, não falas
+    # copiadas da entrevista, do currículo ou da apresentação profissional.
+    if re.search(r'[“”«»]',combined) or re.search(r'(?i)(?:informou|relatou|respondeu|afirmou|disse)\s*:\s*[\"“]',combined):
+        raise HTTPException(422,'O parecer externo deve conter interpretação profissional, sem transcrições literais. Reescreva os trechos em formato analítico.')
     if any(re.search(pattern,combined) for pattern in forbidden):
         raise HTTPException(422,'O parecer contém referências a códigos de perguntas, importação ou trechos de coleta. Gere novamente a minuta e revise as três seções antes de aprovar.')
 
@@ -1229,6 +1242,7 @@ async def approve_client_report(request:Request,cid:str):
         report=json.loads(row['report_json']);sections=report.get('client_sections') or {}
         if not sections.get('tecnicas') or not sections.get('comportamentais') or not str(sections.get('recomendacao') or '').strip():
             raise HTTPException(422,'Preencha e salve as três seções antes de aprovar.')
+        verify_external_narrative(list(sections.get('tecnicas') or [])+list(sections.get('comportamentais') or [])+[sections.get('recomendacao') or ''])
         if not report.get('client_edited_at') or report.get('client_requires_revalidation'):
             raise HTTPException(409,'Revise e salve novamente o parecer após a última alteração das avaliações.')
         report['client_approved_at']=now()
@@ -1330,6 +1344,7 @@ def download_pdf(request:Request,cid:str):
         raise HTTPException(409,'Revise e salve as seções técnica e comportamental antes de exportar.')
     if not report.get('client_approved_at'):
         raise HTTPException(409,'O parecer ainda não foi aprovado pelo recrutador. Confira a minuta e clique em Aprovar parecer para o cliente.')
+    verify_external_narrative(list(sections.get('tecnicas') or [])+list(sections.get('comportamentais') or [])+[sections.get('recomendacao') or ''])
     content=render_client_pdf(report)
     return Response(content,media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="parecer_cliente_{cid}.pdf"'})
 

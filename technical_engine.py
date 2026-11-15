@@ -55,6 +55,21 @@ def metrics(report):
        'differential_percent':differential['score'],'differential_coverage':differential['coverage'],
        'adherence_with_differentials_percent':None,
        'score_method':'Índice de aderência evidenciada: soma(peso × nota 0–4)/(4 × soma dos pesos da matriz), ×100. Critérios sem evidência não recebem nota nem saem do denominador. Não representa incapacidade nem aprovação.'})
+    for c in criteria:
+        ai=c.get('auto_score'); decision=c.get('review_decision')
+        if decision=='ratificar' and ai is not None:
+            comparison='Concordância: avaliação da IA ratificada pelo recrutador'
+        elif decision=='retificar' and ai is None:
+            comparison='Avaliação humana independente: não houve nota preliminar da IA'
+        elif decision=='retificar' and ai!=c.get('human_score'):
+            comparison='Divergência: nota revista pelo recrutador'
+        elif decision=='retificar':
+            comparison='Concordância de notas, com ajuste fundamentado do recrutador'
+        elif ai is None:
+            comparison='IA não avaliou o critério; revisão humana pendente'
+        else:
+            comparison='Proposta da IA disponível, aguardando comparação humana'
+        c['comparison_status']=comparison
     report['reviewed_count']=sum(1 for c in criteria if c.get('review_decision') in ('ratificar','retificar'))
     report['reviewable_count']=sum(1 for c in criteria if c.get('category_key') in ('responsabilidade','hard','soft'))
     report['review_status']='Revisado pelo recrutador' if report['reviewable_count'] and report['reviewed_count']==report['reviewable_count'] else ('Revisão parcial' if report['reviewed_count'] else 'Pendente de revisão humana')
@@ -65,6 +80,10 @@ def prepare_report(questions,answers,cv,disc,linkedin_text,linkedin_url,title,ca
     """Coleta fontes por critério SEM atribuir notas por densidade/termos."""
     criteria=[];pending=[]
     for q in questions:
+        # Itens com texto-padrão não podem entrar como requisito nem no denominador.
+        if re.search(r'(?i)novo crit[eé]rio|inserir origem e compet[eê]ncia',str(q.get('criterion',''))):
+            pending.append('Pergunta '+str(q.get('id',''))+' contém critério de preenchimento, excluído da pontuação; revise o roteiro da vaga.')
+            continue
         a=answers.get(q['id'],{})
         answer=(a.get('text') or a.get('transcript') or '').strip()[:6000]
         terms=tokens(q.get('criterion',''))

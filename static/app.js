@@ -24,7 +24,7 @@ async function atualizarVersaoDoPainel(){
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
     if(versao==='9.7.7-parecer-qualite'){
-      indicador.textContent='V9.7.7 · Qualité Entrevistar Digital';
+      indicador.textContent=diagnostico.build==='qualite-parecer-analitico-confronto-9772'?'V9.7.7.2 · Qualité Entrevistar Digital':'V9.7.7 · Qualité Entrevistar Digital';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
@@ -193,7 +193,7 @@ function drawReport(){
  <div class="kpi"><div><strong>${pct(r.behavioral_percent)}</strong><small>Soft skills (sem DISC na nota)</small></div><div><strong>${pct(r.adherence_percent)}</strong><small>Aderência global evidenciada</small></div></div>
  <div class="origin"><strong>${escapeHTML(r.review_status||'Pendente de revisão')}</strong> · ${r.reviewed_count||0}/${r.reviewable_count||0} critérios analisados pelo recrutador</div>
  <p class="hint"><strong>Método:</strong> ${escapeHTML(r.analysis_mode)}</p>
- <p class="hint">A escala é 0–4. Sem evidência, o critério permanece sem nota e continua no denominador. Aderência não é aprovação. As notas da IA dependem de revisão humana.</p>`;
+ <p class="hint">A escala é 0–4. Nota preliminar somente quando um modelo de IA realmente avaliou as fontes. Sem modelo configurado, nenhuma nota é inventada. O recrutador pode registrar avaliação própria, e o painel apresenta concordâncias ou divergências. Aderência não é aprovação.</p>`;
  for(const c of r.criteria){
    const proposal=c.auto_score;const value=c.score;
    const quoteList=(c.verified_excerpts||[]).map(x=>`<div class="origin"><strong>${escapeHTML(x.source)}:</strong> “${escapeHTML(x.excerpt)}”</div>`).join('');
@@ -201,9 +201,11 @@ function drawReport(){
    html+=`<article class="criterion"><div class="category">${escapeHTML(c.category)}${c.differential?' · Diferencial':''}</div>
        <strong>${escapeHTML(c.id)}. ${escapeHTML(c.criterion)}</strong>
        <p class="hint">Origem na vaga: ${escapeHTML(c.source_jd)}</p>
-       <p><strong>Nota sugerida:</strong> ${proposal==null?'Sem evidência para nota':proposal+'/4'} · <strong>Nota vigente:</strong> ${value==null?'Sem nota':value+'/4'} · Peso ${c.weight}</p>
-       <p><strong>Justificativa:</strong> ${escapeHTML(c.auto_reason||c.status)}</p>
-       ${quoteList||'<p class="hint">A IA não identificou citação literal válida para este critério.</p>'}
+       <p><strong>Nota da IA:</strong> ${proposal==null?'Não avaliada':proposal+'/4'} · <strong>Nota vigente:</strong> ${value==null?'Sem nota':value+'/4'} · Peso ${c.weight}</p>
+       <p><strong>Pré-análise documental:</strong> ${escapeHTML(c.preliminary_documentary_review||'Aguardando verificação das fontes')}</p>
+       <p><strong>Avaliação contextual da IA:</strong> ${escapeHTML(c.auto_reason||c.status)}</p>
+       <p class="origin"><strong>Confronto IA × recrutador:</strong> ${escapeHTML(c.comparison_status||'Pendente de revisão')}</p>
+       ${quoteList||'<p class="hint">Não há evidência selecionada pelo modelo; confira documentos e respostas para fazer avaliação própria.</p>'}
        ${warnings}
        <div class="reviewgrid">
          <label>Decisão do recrutador<select data-decision="${escapeHTML(c.id)}"><option value="pendente">Pendente, sem alteração</option><option value="ratificar" ${c.review_decision==='ratificar'?'selected':''} ${proposal==null?'disabled':''}>Ratificar a nota sugerida</option><option value="retificar" ${c.review_decision==='retificar'?'selected':''}>Retificar ou acrescentar nota</option></select></label>
