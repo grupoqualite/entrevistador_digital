@@ -374,7 +374,7 @@ def remove_company_logo(request:Request):
     return {'ok':True}
 
 @APP.get('/api/health')
-def health():return {'ok':True,'version':'9.7.7-parecer-qualite','build':'qualite-parecer-analitico-confronto-9772','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'contextual apenas com modelo local configurado; triagem documental sem nota disponivel','pilot_only':True}
+def health():return {'ok':True,'version':'9.7.7-parecer-qualite','build':'qualite-questionarios-classificados-9773','storage':'EFEMERO - dados perdidos em reinicializacoes/hibernacao', 'transcription':'desativada para novas entrevistas; audios anteriores preservados','analysis':'contextual apenas com modelo local configurado; triagem documental sem nota disponivel','pilot_only':True}
 
 @APP.post('/api/login')
 async def login(request:Request,response:Response,password:str=Form(...),identifier:str=Form('')):
@@ -555,13 +555,25 @@ async def update_questions(request:Request,v_id:str):
     body=await request.json(); qs=body.get('questions',[])
     if not isinstance(qs,list) or len(qs)>40:raise HTTPException(422,'Lista inválida, máximo de 40 perguntas.')
     cleans=[]
+    labels={'responsabilidade':'Responsabilidades','hard':'Hard skills','soft':'Soft skills','logistica':'Condições da vaga'}
     for i,q in enumerate(qs,1):
-        if not isinstance(q,dict):continue
-        question=str(q.get('question','')).strip()[:1200]
-        if len(question)<12:continue
-        label=str(q.get('category','hard'))
-        if label not in ('responsabilidade','hard','soft','logistica'):label='hard'
-        cleans.append({'id':f'Q{i:02d}','category':label,'category_label':{'responsabilidade':'Responsabilidades','hard':'Hard skills','soft':'Soft skills','logistica':'Condições da vaga'}[label], 'criterion':str(q.get('criterion',''))[:250], 'origin':str(q.get('origin',''))[:500], 'line':q.get('line',0), 'differential':bool(q.get('differential',False)),'weight':max(1,min(5,int(q.get('weight',2)))),'question':question,'focus':str(q.get('focus',''))[:140], 'expected_evidence':str(q.get('expected_evidence',''))[:350], 'cv_observation':''})
+        if not isinstance(q,dict):raise HTTPException(422,f'Pergunta {i}: formato inválido.')
+        manual=q.get('manual') is True or q.get('origin')=='Pergunta inserida manualmente pelo recrutador'
+        question=str(q.get('question') or '').strip()[:1200]
+        if len(question)<12:raise HTTPException(422,f'Pergunta {i}: escreva uma pergunta válida (mínimo de 12 caracteres).')
+        label=q.get('category')
+        if not isinstance(label,str) or label not in labels:raise HTTPException(422,f'Pergunta {i}: selecione uma classificação válida.')
+        criterion=str(q.get('criterion') or '').strip()[:250]
+        if not criterion or re.search(r'(?i)novo crit[eé]rio|inserir origem e compet[eê]ncia',criterion):
+            raise HTTPException(422,f'Pergunta {i}: informe o critério avaliado, sem texto de preenchimento.')
+        differential=q.get('differential',False)
+        if not isinstance(differential,bool):raise HTTPException(422,f'Pergunta {i}: classificação de diferencial inválida.')
+        try:weight=max(1,min(5,int(q.get('weight',2))))
+        except (TypeError,ValueError,OverflowError):raise HTTPException(422,f'Pergunta {i}: peso inválido.')
+        cleans.append({'id':f'Q{i:02d}','category':label,'category_label':labels[label], 'criterion':criterion,
+            'origin':str(q.get('origin') or '')[:500] or ('Pergunta inserida manualmente pelo recrutador' if manual else ''),
+            'line':q.get('line',0),'manual':manual,'differential':differential,'weight':weight,'question':question,
+            'focus':str(q.get('focus') or '')[:140], 'expected_evidence':str(q.get('expected_evidence') or '')[:350], 'cv_observation':''})
     if not cleans:raise HTTPException(422,'Mantenha ao menos uma pergunta válida.')
     with conn() as db:
         db.execute('UPDATE vacancies SET questions_json=? WHERE id=?',(json.dumps(cleans,ensure_ascii=False),v_id))

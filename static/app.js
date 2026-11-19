@@ -24,7 +24,7 @@ async function atualizarVersaoDoPainel(){
     const versao=typeof diagnostico.version==='string'?diagnostico.version.trim():'';
     if(!versao)throw new Error('Versão ausente no diagnóstico');
     if(versao==='9.7.7-parecer-qualite'){
-      indicador.textContent=diagnostico.build==='qualite-parecer-analitico-confronto-9772'?'V9.7.7.2 · Qualité Entrevistar Digital':'V9.7.7 · Qualité Entrevistar Digital';
+      indicador.textContent=({'qualite-questionarios-classificados-9773':'V9.7.7.3','qualite-parecer-analitico-confronto-9772':'V9.7.7.2'}[diagnostico.build]||'V9.7.7')+' · Qualité Entrevistar Digital';
       indicador.title='Servidor verificado: '+versao;
     }else{
       indicador.textContent='Servidor: '+versao;
@@ -79,9 +79,57 @@ $('applySheet').onclick=()=>{if(!state.sourceParts)return;const v=$('sheetSelect
 $('vacancyForm').onsubmit=async e=>{e.preventDefault();if($('jobFile').files.length && !$('jobDescription').value.trim())return info('jobMsg','Aplique o texto importado antes de gerar as perguntas.',true);try{const data=new URLSearchParams({title:$('jobTitle').value,description:$('jobDescription').value});const r=await call('/api/admin/vacancies',{method:'POST',body:data});state.selectedVacancy=r.id;await refreshVacancies();info('jobMsg',`Vaga criada com ${r.generated} perguntas. ${r.warnings.join(' ')||'Revise o questionário na área ao lado.'}`);$('vacancySelect').scrollIntoView({behavior:'smooth',block:'nearest'})}catch(err){info('jobMsg',err.message,true)}};
 $('vacancySelect').onchange=async()=>{state.selectedVacancy=$('vacancySelect').value;await loadQuestions()};
 async function loadQuestions(){if(!state.selectedVacancy)return;const v=await call(`/api/admin/vacancies/${state.selectedVacancy}`);state.editing=v.questions;drawQuestions();$('qMsg').classList.add('hidden')}
-function drawQuestions(){const el=$('questions');el.innerHTML='';$('qCounter').textContent=`${state.editing.length} perguntas`;state.editing.forEach((q,index)=>{const box=document.createElement('article');box.className='questioncard';box.innerHTML=`<div class="meta"><span class="category">${escapeHTML(q.category_label||q.category)}</span><button class="btn small outline" data-remove="${index}" type="button">Remover</button></div><textarea rows="3" data-edit="${index}" aria-label="Pergunta ${index+1}">${escapeHTML(q.question)}</textarea><div class="origin"><strong>Foco da pergunta:</strong> ${escapeHTML(q.focus||q.category_label||'Competência da vaga')}<br><strong>O que verificar:</strong> ${escapeHTML(q.expected_evidence||'Experiência prática e resultados verificáveis')}<br><strong>Trecho da vaga:</strong> ${escapeHTML(q.origin||'Inserida manualmente')}<br><strong>Critério:</strong> ${escapeHTML(q.criterion||'')}</div><div class="smallrow"><span class="hint">Peso (1 a 5):</span><select data-weight="${index}">${[1,2,3,4,5].map(w=>`<option ${Number(q.weight)===w?'selected':''} value="${w}">${w}</option>`).join('')}</select><label class="hint" style="margin:0"><input data-diff="${index}" type="checkbox" style="width:auto;display:inline;margin:0" ${q.differential?'checked':''}> Diferencial</label></div>`;el.append(box)});el.querySelectorAll('[data-edit]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.edit)].question=x.value);el.querySelectorAll('[data-weight]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.weight)].weight=Number(x.value));el.querySelectorAll('[data-diff]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.diff)].differential=x.checked);el.querySelectorAll('[data-remove]').forEach(x=>x.onclick=()=>{state.editing.splice(Number(x.dataset.remove),1);drawQuestions()})}
-$('addQuestion').onclick=()=>{state.editing.push({question:'',category:'hard',category_label:'Hard skills',criterion:'Novo critério, inserir origem e competência.',origin:'Pergunta inserida manualmente pelo recrutador',weight:2,differential:false});drawQuestions();$('questions').scrollTop=$('questions').scrollHeight};
-$('saveQuestions').onclick=async()=>{try{state.editing.forEach((q,i)=>{const field=document.querySelector(`[data-edit="${i}"]`);if(field)q.question=field.value});const res=await call(`/api/admin/vacancies/${state.selectedVacancy}/questions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({questions:state.editing})});state.editing=res.questions;drawQuestions();info('qMsg','Questionário salvo e pronto para ser usado com os candidatos.')}catch(err){info('qMsg',err.message,true)}};
+const questionCategories={hard:'Hard Skill',soft:'Soft Skill',responsabilidade:'Análise de responsabilidade',diferencial:'Diferencial',logistica:'Condições da vaga'};
+const storedCategoryLabels={hard:'Hard skills',soft:'Soft skills',responsabilidade:'Responsabilidades',logistica:'Condições da vaga'};
+const legacyCriterion=/novo crit[eé]rio|inserir origem e compet[eê]ncia/i;
+const isManualQuestion=q=>q.manual===true||q.origin==='Pergunta inserida manualmente pelo recrutador';
+const classificationOf=q=>q.differential?'diferencial':q.category||'';
+function categoryOptions(current,items,placeholder=false){return (placeholder?`<option value="" disabled ${current?'':'selected'}>Selecione a classificação</option>`:'')+items.map(k=>`<option value="${k}" ${current===k?'selected':''}>${questionCategories[k]}</option>`).join('');}
+function drawQuestions(){
+ const el=$('questions');el.innerHTML='';$('qCounter').textContent=`${state.editing.length} perguntas`;
+ state.editing.forEach((q,index)=>{
+  const box=document.createElement('article');box.className='questioncard';
+  const manual=isManualQuestion(q), classification=classificationOf(q);
+  const criterion=legacyCriterion.test(q.criterion||'')?'':q.criterion||'';
+  const nature=q.category&&q.category!=='logistica'?q.category:'hard';
+  box.innerHTML=`<div class="meta"><span class="category">${escapeHTML(questionCategories[classification]||'Sem classificação')}</span><button class="btn small outline" data-remove="${index}" type="button">Remover</button></div>
+  <label>Classificação da pergunta<select data-category="${index}" required>${categoryOptions(classification,['hard','soft','diferencial','responsabilidade','logistica'],true)}</select></label>
+  ${classification==='diferencial'?`<label>Natureza do diferencial<select data-nature="${index}">${categoryOptions(nature,['hard','soft','responsabilidade'])}</select></label><p class="hint">Avaliado separadamente, sem reduzir a aderência aos requisitos essenciais.</p>`:''}
+  <label>Competência, responsabilidade ou diferencial avaliado<input data-criterion="${index}" maxlength="250" value="${escapeHTML(criterion)}" placeholder="Ex.: Negociação consultiva" required></label>
+  <label>Pergunta<textarea rows="3" data-edit="${index}" aria-label="Pergunta ${index+1}" maxlength="1200" required>${escapeHTML(q.question)}</textarea></label>
+  ${manual?'<p class="hint">Pergunta manual. Informe um critério específico para fundamentar a avaliação.</p>':`<div class="origin"><strong>Foco original:</strong> ${escapeHTML(q.focus||q.category_label||'Competência da vaga')}<br><strong>O que verificar:</strong> ${escapeHTML(q.expected_evidence||'Experiência prática e resultados verificáveis')}<br><strong>Trecho da vaga:</strong> ${escapeHTML(q.origin||'Inserida manualmente')}</div>`}
+  <label>Peso (1 a 5)<select data-weight="${index}">${[1,2,3,4,5].map(w=>`<option ${Number(q.weight)===w?'selected':''} value="${w}">${w}</option>`).join('')}</select></label>`;
+  el.append(box);
+ });
+ el.querySelectorAll('[data-edit]').forEach(x=>x.oninput=()=>state.editing[Number(x.dataset.edit)].question=x.value);
+ el.querySelectorAll('[data-criterion]').forEach(x=>x.oninput=()=>state.editing[Number(x.dataset.criterion)].criterion=x.value);
+ el.querySelectorAll('[data-weight]').forEach(x=>x.onchange=()=>state.editing[Number(x.dataset.weight)].weight=Number(x.value));
+ el.querySelectorAll('[data-category]').forEach(x=>x.onchange=()=>{
+  const q=state.editing[Number(x.dataset.category)], selection=x.value;
+  q.differential=selection==='diferencial';
+  if(q.differential){if(!['hard','soft','responsabilidade'].includes(q.category))q.category='hard';}
+  else q.category=selection;
+  q.category_label=storedCategoryLabels[q.category];drawQuestions();
+ });
+ el.querySelectorAll('[data-nature]').forEach(x=>x.onchange=()=>{const q=state.editing[Number(x.dataset.nature)];q.category=x.value;q.category_label=storedCategoryLabels[q.category];});
+ el.querySelectorAll('[data-remove]').forEach(x=>x.onclick=()=>{state.editing.splice(Number(x.dataset.remove),1);drawQuestions()});
+}
+$('addQuestion').onclick=()=>{
+ if(!state.selectedVacancy)return info('qMsg','Selecione uma vaga antes de incluir uma pergunta.',true);
+ state.editing.push({question:'',category:'',category_label:'',criterion:'',origin:'Pergunta inserida manualmente pelo recrutador',manual:true,weight:2,differential:false});
+ drawQuestions();const field=document.querySelector(`[data-category="${state.editing.length-1}"]`);field?.focus();field?.scrollIntoView({block:'nearest'});
+};
+$('saveQuestions').onclick=async()=>{try{
+ if(!state.selectedVacancy)throw new Error('Selecione uma vaga.');
+ for(let i=0;i<state.editing.length;i++){
+  const q=state.editing[i], field=document.querySelector(`[data-edit="${i}"]`), criterion=document.querySelector(`[data-criterion="${i}"]`);
+  if(field)q.question=field.value;if(criterion)q.criterion=criterion.value;
+  if(!storedCategoryLabels[q.category])throw new Error(`Pergunta ${i+1}: selecione a classificação.`);
+  if(!q.criterion?.trim()||legacyCriterion.test(q.criterion))throw new Error(`Pergunta ${i+1}: informe o critério avaliado.`);
+  if((q.question||'').trim().length<12)throw new Error(`Pergunta ${i+1}: escreva uma pergunta válida (mínimo de 12 caracteres).`);
+ }
+ const res=await call(`/api/admin/vacancies/${state.selectedVacancy}/questions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({questions:state.editing})});state.editing=res.questions;drawQuestions();info('qMsg','Questionário salvo e pronto para ser usado com os candidatos.');
+}catch(err){info('qMsg',err.message,true)}};
 $('candidateForm').onsubmit=async e=>{e.preventDefault();try{const body=new FormData();body.append('vacancy_id',$('candidateVacancy').value);body.append('name',$('candidateName').value.trim());body.append('linkedin_url',$('linkedinUrl').value.trim());body.append('linkedin_text',$('linkedinText').value.trim());body.append('career_narrative_text',$('careerNarrativeText').value.trim());for(const k of ['cv','disc','disc_comparativo','linkedin_pdf','career_narrative']){const f=$(`[name="${k}"]`)?.files?.[0];if(f)body.append(k,f)}const r=await call('/api/admin/candidates',{method:'POST',body});$('inviteResult').innerHTML=`<strong>Convite individual criado:</strong><div class="invite" id="createdInvite">${escapeHTML(r.invite)}</div><button type="button" class="btn small outline" id="copyInvite">Copiar endereço</button><p class="hint">Funciona no mesmo servidor. Respostas exclusivamente digitadas, com bloqueio de colagem.</p>`;$('inviteResult').classList.remove('hidden');$('copyInvite').onclick=()=>navigator.clipboard?.writeText(r.invite);$('candidateForm').reset();await refreshCandidates()}catch(err){info('inviteResult',err.message,true)}};
 function drawCandidateList(){const el=$('candidateCards');el.innerHTML=state.candidates.length?'':'<p class="hint">Ainda não há candidatos.</p>';for(const c of state.candidates){const box=document.createElement('article');box.className='card';box.innerHTML=`<h3>${escapeHTML(c.name)}</h3><p>${escapeHTML(c.vacancy)}</p><p><span class="category">${escapeHTML(c.status)}</span></p><button type="button" class="btn small outline" data-open-candidate="${escapeHTML(c.id)}">Analisar entrevista</button>`;el.append(box)}el.querySelectorAll('[data-open-candidate]').forEach(x=>x.onclick=async()=>{showTab('reports');$('reportCandidate').value=x.dataset.openCandidate;await selectCandidate()})}
 $('reportCandidate').onchange=selectCandidate;
